@@ -1,0 +1,51 @@
+# Name of this GitHub Actions workflow.
+name: StartLeft-QA
+
+on:
+  # Scan changed files in PRs (diff-aware scanning):
+  #pull_request: {}
+  # Scan on-demand through GitHub Actions interface:
+  workflow_dispatch: {}
+  # Scan mainline branches and report all findings:
+  push:
+    branches: ["master", "main"]
+  # Schedule the CI job (this method uses cron syntax):
+  #schedule:
+    #- cron: '20 23 * * *' # Sets schedule to scan every day at 23:20 UTC.
+    # It is recommended to change the schedule to a random time.
+
+jobs:
+  sls:
+    # User definable name of this GitHub Actions job.
+    name: sls/scan
+    # If you are self-hosting, change the following `runs-on` value: 
+    runs-on: ubuntu-latest
+
+    # Skip any PR created by dependabot to avoid permission issues:
+    if: (github.actor != 'dependabot[bot]')
+
+    steps:
+      # Fetch project source with GitHub Actions Checkout.
+      - uses: actions/checkout@v4
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: tauruseer.azurecr.io
+          username: ${{ secrets.SLS_CLIENT_ID }}
+          password: ${{ secrets.SLS_CLIENT_SECRET }}
+
+      # Run the "sls sca scan" command on the command line of the docker image.
+      - run: docker pull tauruseer.azurecr.io/sca-scanner-pipeline:qa
+      - run: docker run -v ${{ github.workspace }}:/source tauruseer.azurecr.io/sca-scanner-pipeline:qa --scan-key=${SLS_SCAN_KEY} --env=qa
+        env:
+          # and add it to your GitHub secrets.
+          SLS_SCAN_KEY: ${{ secrets.SLS_QA_KEY }}
+          
+      # Run the "sls sast scan" command on the command line of the docker image.
+      #- run: docker login -u ${{ secrets.SLS_CLIENT_ID }} -p ${{ secrets.SLS_CLIENT_SECRET }} tauruseer.azurecr.io
+      - run: docker pull tauruseer.azurecr.io/sast-scanner-pipeline:qa
+      - run: docker run -v ${{ github.workspace }}:/source tauruseer.azurecr.io/sast-scanner-pipeline:qa --scan-key=${SLS_SCAN_KEY}  --env=qa
+        env:
+          # and add it to your GitHub secrets.
+          SLS_SCAN_KEY: ${{ secrets.SLS_QA_KEY }}
