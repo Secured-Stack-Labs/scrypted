@@ -7,8 +7,8 @@ on:
   # Scan on-demand through GitHub Actions interface:
   workflow_dispatch: {}
   # Scan mainline branches and report all findings:
-  push:
-    branches: ["master", "main"]
+  #push:
+    #branches: ["master", "main"]
   # Schedule the CI job (this method uses cron syntax):
   #schedule:
     #- cron: '20 23 * * *' # Sets schedule to scan every day at 23:20 UTC.
