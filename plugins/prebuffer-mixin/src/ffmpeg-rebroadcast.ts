@@ -2,6 +2,7 @@ import { cloneDeep } from '@scrypted/common/src/clone-deep';
 import { Deferred } from "@scrypted/common/src/deferred";
 import { listenZeroSingleClient } from '@scrypted/common/src/listen-cluster';
 import { ffmpegLogInitialOutput, safeKillFFmpeg, safePrintFFmpegArguments } from '@scrypted/common/src/media-helpers';
+import { createActivityTimeout } from '@scrypted/common/src/activity-timeout';
 import { createRtspParser } from "@scrypted/common/src/rtsp-server";
 import { parseSdp } from "@scrypted/common/src/sdp-utils";
 import { StreamChunk, StreamParser } from '@scrypted/common/src/stream-parser';
@@ -13,15 +14,9 @@ const { mediaManager } = sdk;
 
 export interface ParserSession<T extends string> {
     parserSpecific?: any;
-    sdp: Promise<Buffer[]>;
+    sdp: Promise<string>;
     resetActivityTimer?: () => void,
-    negotiateMediaStream(requestMediaStream: RequestMediaStreamOptions): ResponseMediaStreamOptions;
-    inputAudioCodec?: string;
-    inputVideoCodec?: string;
-    inputVideoResolution?: {
-        width: number,
-        height: number,
-    },
+    negotiateMediaStream(requestMediaStream: RequestMediaStreamOptions, inputVideoCodec: string, inputAudioCodec: string): ResponseMediaStreamOptions;
     start(): void;
     kill(error?: Error): void;
     killed: Promise<void>;
@@ -29,6 +24,7 @@ export interface ParserSession<T extends string> {
 
     emit(container: T, chunk: StreamChunk): this;
     on(container: T, callback: (chunk: StreamChunk) => void): this;
+    on(error: 'error', callback: (e: Error) => void): this;
     removeListener(event: T | 'killed', callback: any): this;
     once(event: T | 'killed', listener: (...args: any[]) => void): this;
 }
@@ -100,42 +96,14 @@ export async function parseAudioCodec(cp: ChildProcess) {
 export function setupActivityTimer(container: string, kill: (error?: Error) => void, events: {
     once(event: 'killed', callback: () => void): void,
 }, timeout: number) {
-    let dataTimeout: NodeJS.Timeout;
-
-    function dataKill() {
+    const ret = createActivityTimeout(timeout, () => {
         const str = 'timeout waiting for data, killing parser session';
         console.error(str, container);
         kill(new Error(str));
-    }
-
-    let lastTime = Date.now();
-    function resetActivityTimer() {
-        lastTime = Date.now();
-    }
-
-    function clearActivityTimer() {
-        clearInterval(dataTimeout);
-    }
-
-    if (timeout) {
-        dataTimeout = setInterval(() => {
-            if (Date.now() > lastTime + timeout) {
-                clearInterval(dataTimeout);
-                dataTimeout = undefined;
-                dataKill();
-            }
-        }, timeout);
-    }
-
-    events.once('killed', () => clearInterval(dataTimeout));
-
-    resetActivityTimer();
-    return {
-        resetActivityTimer,
-        clearActivityTimer,
-    }
+    });
+    events.once('killed', () => ret.clearActivityTimer());
+    return ret;
 }
-
 
 export async function startParserSession<T extends string>(ffmpegInput: FFmpegInput, options: ParserOptions<T>): Promise<ParserSession<T>> {
     const { console } = options;
@@ -143,22 +111,22 @@ export async function startParserSession<T extends string>(ffmpegInput: FFmpegIn
     let isActive = true;
     const events = new EventEmitter();
     // need this to prevent kill from throwing due to uncaught Error during cleanup
-    events.on('error', e => console.error('rebroadcast error', e));
-
-    let inputAudioCodec: string;
-    let inputVideoCodec: string;
-    let inputVideoResolution: string[];
+    events.on('error', () => {});
 
     let sessionKilled: any;
     const killed = new Promise<void>(resolve => {
         sessionKilled = resolve;
     });
 
+    const sdpDeferred = new Deferred<string>();
     function kill(error?: Error) {
+        error ||= new Error('killed');
         if (isActive) {
             events.emit('killed');
-            events.emit('error', error || new Error('killed'));
+            events.emit('error', error);
         }
+        if (!sdpDeferred.finished)
+            sdpDeferred.reject(error);
         isActive = false;
         sessionKilled();
         safeKillFFmpeg(cp);
@@ -166,6 +134,7 @@ export async function startParserSession<T extends string>(ffmpegInput: FFmpegIn
 
 
     const args = ffmpegInput.inputArguments.slice();
+    const env = ffmpegInput.env ? { ...process.env, ...ffmpegInput.env } : undefined;
 
     const ensureActive = (killed: () => void) => {
         if (!isActive) {
@@ -183,7 +152,7 @@ export async function startParserSession<T extends string>(ffmpegInput: FFmpegIn
         const parser: StreamParser = options.parsers[container as T];
 
         if (parser.tcpProtocol) {
-            const tcp = await listenZeroSingleClient();
+            const tcp = await listenZeroSingleClient('127.0.0.1');
             const url = new URL(parser.tcpProtocol);
             url.port = tcp.port.toString();
             args.push(
@@ -198,7 +167,7 @@ export async function startParserSession<T extends string>(ffmpegInput: FFmpegIn
                 try {
                     ensureActive(() => socket.destroy());
 
-                    for await (const chunk of parser.parse(socket, parseInt(inputVideoResolution?.[2]), parseInt(inputVideoResolution?.[3]))) {
+                    for await (const chunk of parser.parse(socket, undefined, undefined)) {
                         events.emit(container, chunk);
                         resetActivityTimer();
                     }
@@ -221,8 +190,9 @@ export async function startParserSession<T extends string>(ffmpegInput: FFmpegIn
     // start ffmpeg process with child process pipes
     args.unshift('-hide_banner');
     safePrintFFmpegArguments(console, args);
-    const cp = child_process.spawn(await mediaManager.getFFmpegPath(), args, {
+    const cp = child_process.spawn(ffmpegInput.ffmpegPath || await mediaManager.getFFmpegPath(), args, {
         stdio,
+        env,
     });
     ffmpegLogInitialOutput(console, cp, undefined, options?.storage);
     cp.on('exit', () => kill(new Error('ffmpeg exited')));
@@ -245,7 +215,7 @@ export async function startParserSession<T extends string>(ffmpegInput: FFmpegIn
             try {
                 const { resetActivityTimer } = setupActivityTimer(container, kill, events, options?.timeout);
 
-                for await (const chunk of parser.parse(pipe as any, parseInt(inputVideoResolution?.[2]), parseInt(inputVideoResolution?.[3]))) {
+                for await (const chunk of parser.parse(pipe as any, undefined, undefined)) {
                     await deferredStart.promise;
                     events.emit(container, chunk);
                     resetActivityTimer();
@@ -260,16 +230,9 @@ export async function startParserSession<T extends string>(ffmpegInput: FFmpegIn
 
     const rtsp = (options.parsers as any).rtsp as ReturnType<typeof createRtspParser>;
     rtsp.sdp.then(sdp => {
-        const parsed = parseSdp(sdp);
-        const audio = parsed.msections.find(msection => msection.type === 'audio');
-        const video = parsed.msections.find(msection => msection.type === 'video');
-        inputVideoCodec = video?.codec;
-        inputAudioCodec = audio?.codec;
+        console?.log('sdp received from ffmpeg', sdp);
+        sdpDeferred.resolve(sdp);
     });
-
-    const sdp = new Deferred<Buffer[]>();
-    rtsp.sdp.then(r => sdp.resolve([Buffer.from(r)]));
-    killed.then(() => sdp.reject(new Error("ffmpeg killed before sdp could be parsed")));
 
     start();
 
@@ -277,25 +240,13 @@ export async function startParserSession<T extends string>(ffmpegInput: FFmpegIn
         start() {
             deferredStart.resolve();
         },
-        sdp: sdp.promise,
-        get inputAudioCodec() {
-            return inputAudioCodec;
-        },
-        get inputVideoCodec() {
-            return inputVideoCodec;
-        },
-        get inputVideoResolution() {
-            return {
-                width: parseInt(inputVideoResolution?.[2]),
-                height: parseInt(inputVideoResolution?.[3]),
-            }
-        },
+        sdp: sdpDeferred.promise,
         get isActive() { return isActive },
         kill(error?: Error) {
             kill(error);
         },
         killed,
-        negotiateMediaStream: () => {
+        negotiateMediaStream: (requestMediaStream: RequestMediaStreamOptions, inputVideoCodec, inputAudioCodec) => {
             const ret: ResponseMediaStreamOptions = cloneDeep(ffmpegInput.mediaStreamOptions) || {
                 id: undefined,
                 name: undefined,

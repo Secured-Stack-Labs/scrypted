@@ -1,5 +1,6 @@
-import type { Socket as NodeNetSocket } from 'net';
+import type { ChildProcess as NodeChildProcess } from 'child_process';
 import type { Worker as NodeWorker } from 'worker_threads';
+import type { Socket as NodeNetSocket } from 'net';
 
 export type ScryptedNativeId = string | undefined;
 
@@ -224,6 +225,9 @@ export interface NotifierOptions {
   badge?: string;
   bodyWithSubtitle?: string;
   body?: string;
+  android?: {
+    channel?: string;
+  }
   data?: any;
   dir?: NotificationDirection;
   lang?: string;
@@ -233,7 +237,7 @@ export interface NotifierOptions {
   tag?: string;
   timestamp?: number;
   vibrate?: VibratePattern;
-  recordedEvent?: RecordedEvent;
+  recordedEvent?: RecordedEvent & { id: string };
 
   // removed from typescript dom?
   actions?: NotificationAction[];
@@ -453,10 +457,8 @@ export interface VideoStreamOptions {
   minBitrate?: number;
   maxBitrate?: number;
   fps?: number;
-  /**
-   * Key Frame interval in milliseconds.
-   */
-  idrIntervalMillis?: number;
+  // what the heck is this?
+  quality?: number;
   /**
    * Key Frame interval in frames.
    */
@@ -477,7 +479,7 @@ export interface AudioStreamOptions {
   sampleRate?: number;
 }
 
-export type MediaStreamSource = "local" | "cloud";
+export type MediaStreamSource = "local" | "cloud" | "synthetic";
 export type MediaStreamTool = 'ffmpeg' | 'scrypted' | 'gstreamer';
 
 /**
@@ -670,8 +672,154 @@ export interface VideoCamera {
   getVideoStreamOptions(): Promise<ResponseMediaStreamOptions[]>;
 }
 
+// {
+//   "qualityRange": {
+//     "min": 0,
+//     "max": 5
+//   },
+//   "H264": {
+//     "resolutionsAvailable": [
+//       {
+//         "width": 1280,
+//         "height": 720
+//       },
+//       {
+//         "width": 1920,
+//         "height": 1080
+//       },
+//       {
+//         "width": 2688,
+//         "height": 1520
+//       },
+//       {
+//         "width": 3072,
+//         "height": 1728
+//       },
+//       {
+//         "width": 3840,
+//         "height": 2160
+//       }
+//     ],
+//     "govLengthRange": {
+//       "min": 1,
+//       "max": 400
+//     },
+//     "frameRateRange": {
+//       "min": 1,
+//       "max": 30
+//     },
+//     "encodingIntervalRange": {
+//       "min": 1,
+//       "max": 1
+//     },
+//     "H264ProfilesSupported": [
+//       "Baseline",
+//       "Main",
+//       "High"
+//     ]
+//   },
+//   "extension": {
+//     "H264": {
+//       "resolutionsAvailable": [
+//         {
+//           "width": 1280,
+//           "height": 720
+//         },
+//         {
+//           "width": 1920,
+//           "height": 1080
+//         },
+//         {
+//           "width": 2688,
+//           "height": 1520
+//         },
+//         {
+//           "width": 3072,
+//           "height": 1728
+//         },
+//         {
+//           "width": 3840,
+//           "height": 2160
+//         }
+//       ],
+//       "govLengthRange": {
+//         "min": 1,
+//         "max": 400
+//       },
+//       "frameRateRange": {
+//         "min": 1,
+//         "max": 30
+//       },
+//       "encodingIntervalRange": {
+//         "min": 1,
+//         "max": 1
+//       },
+//       "H264ProfilesSupported": [
+//         "Baseline",
+//         "Main",
+//         "High"
+//       ],
+//       "bitrateRange": {
+//         "min": 32,
+//         "max": 16384
+//       }
+//     }
+//   }
+// }
+export interface VideoStreamConfiguration extends VideoStreamOptions {
+  resolutions?: [number, number][];
+  fpsRange?: [number, number];
+  keyframeIntervalRange?: [number, number];
+  bitrateRange?: [number, number];
+  qualityRange?: [number, number];
+  profiles?: string[];
+  bitrateControls?: string[];
+  codecs?: string[];
+}
+
+// audio streams seem more restrictive around what can be configured.
+// {
+//   "options": [
+//     {
+//       "encoding": "G711",
+//       "bitrateList": {
+//         "items": 64
+//       },
+//       "sampleRateList": {
+//         "items": 8
+//       }
+//     },
+//     {
+//       "encoding": "G726",
+//       "bitrateList": {
+//         "items": 16
+//       },
+//       "sampleRateList": {
+//         "items": 8
+//       }
+//     }
+//   ]
+// }
+
+export interface AudioStreamEncoding {
+  codec: string;
+  birates: number[];
+  sampleRates: number[];
+}
+
+export interface AudioStreamConfiguration extends AudioStreamOptions {
+  encodings?: AudioStreamEncoding[];
+}
+
+export interface MediaStreamConfiguration {
+  id?: string;
+  video?: VideoStreamConfiguration;
+  audio?: AudioStreamOptions;
+}
+
+// this is really just a mapping around onvif.
 export interface VideoCameraConfiguration {
-  setVideoStreamOptions(options: MediaStreamOptions): Promise<void>;
+  setVideoStreamOptions(options: MediaStreamOptions): Promise<MediaStreamConfiguration>;
 }
 
 export interface RequestRecordingStreamOptions extends RequestMediaStreamOptions {
@@ -804,12 +952,15 @@ export interface VideoCameraMask {
 
 export enum PanTiltZoomMovement {
   Absolute = "Absolute",
-  Relative = "Relative"
+  Relative = "Relative",
+  Continuous = "Continuous",
+  Preset = "Preset",
+  Home = 'Home',
 }
 
 export interface PanTiltZoomCommand {
   /**
-   * Specify the movement origin. If unspecified, the movement will be relative to the current position.
+   * Specify the movement type. If unspecified, the movement will be relative to the current position.
    */
   movement?: PanTiltZoomMovement;
   /**
@@ -840,13 +991,27 @@ export interface PanTiltZoomCommand {
      * Ranges between 0 and 1 for max zoom.
      */
     zoom?: number;
-  }
+  };
+  /**
+   * The duration of the movement in milliseconds.
+   */
+  timeout?: number;
+  /**
+   * The preset to move to.
+   */
+  preset?: string;
 }
 
 export interface PanTiltZoomCapabilities {
   pan?: boolean;
   tilt?: boolean;
   zoom?: boolean;
+  /**
+   * Preset id mapped to friendly name.
+   */
+  presets?: {
+    [key: string]: string;
+  };
 }
 export interface PanTiltZoom {
   ptzCapabilities?: PanTiltZoomCapabilities;
@@ -1185,6 +1350,34 @@ export interface Settings {
   putSetting(key: string, value: SettingValue): Promise<void>;
 
 }
+
+/**
+ * SystemDevices are listed in the Scrypted UI.
+ */
+export interface ScryptedSystemDevice {
+  /**
+   * Type of device that will be created by this DeviceCreator.
+   * For example: Example Corp Camera or ACME Light Switch.
+   */
+  systemDevice?: ScryptedSystemDeviceInfo;
+}
+
+export interface ScryptedSystemDeviceInfo {
+  /**
+   * The name of the device as seen in System Settings.
+   */
+  settings?: string;
+  /**
+   * The description of device that will be created by this DeviceCreator.
+   * For example: Example Corp Camera or ACME Light Switch.
+   */
+  deviceCreator?: string;
+}
+
+export interface ScryptedSettings {
+}
+export interface ScryptedDeviceCreator {
+}
 export interface BinarySensor {
   binaryState?: boolean;
 }
@@ -1353,7 +1546,7 @@ export interface ObjectDetectionResult extends BoundingBoxResult {
   labelScore?: number;
   /**
    * A base64 encoded Float32Array that represents the vector descriptor of the detection.
-   * Can be used to compute euclidian distance to determine similarity. 
+   * Can be used to compute euclidian distance to determine similarity.
    */
   descriptor?: string;
   /**
@@ -1450,7 +1643,7 @@ export interface ObjectDetectionPreview {
 }
 export interface ObjectDetectionGenerator {
 }
-export type ImageFormat = 'gray' | 'rgba' | 'rgb' | 'jpg';
+export type ImageFormat = 'gray' | 'rgba' | 'rgb' | 'jpg' | string;
 export interface ImageOptions {
   crop?: {
     left: number;
@@ -1474,6 +1667,7 @@ export interface Image {
    * this format, or a compressed format such as jpg.
    */
   format?: ImageFormat;
+  ffmpegFormats?: boolean;
   toBuffer(options?: ImageOptions): Promise<Buffer>;
   toImage(options?: ImageOptions): Promise<Image & MediaObject>;
   close(): Promise<void>;
@@ -1496,8 +1690,26 @@ export interface VideoFrameGenerator {
 /**
  * Generic bidirectional stream connection.
  */
-export interface StreamService {
-  connectStream(input?: AsyncGenerator<any, void>, options?: any): Promise<AsyncGenerator<any, void>>;
+export interface StreamService<Input, Output=Input> {
+  connectStream(input?: AsyncGenerator<Input, void>, options?: any): Promise<AsyncGenerator<Output, void>>;
+}
+/**
+ * TTY connection offered by a remote device that can be connected to
+ * by an interactive terminal interface.
+ *
+ * Implementors should also implement StreamService to handle
+ * the actual data transfer.
+ */
+export interface TTY {
+}
+/**
+ * TTYSettings allows TTY backends to query plugins for modifications
+ * to the (non-)interactive terminal environment.
+ */
+export interface TTYSettings {
+  getTTYSettings(): Promise<{
+    paths?: string[];
+  }>;
 }
 /**
  * Logger is exposed via log.* to allow writing to the Scrypted log.
@@ -1567,7 +1779,7 @@ export interface OauthClient {
   onOauthCallback(callbackUrl: string): Promise<void>;
 
 }
-export type SerializableType = null | undefined | number | string | { [key: string]: SerializableType } | SerializableType[];
+export type SerializableType = null | undefined | boolean | number | string | { [key: string]: SerializableType } | SerializableType[];
 export type TopLevelSerializableType = Function | Buffer | SerializableType;
 
 export interface MediaObjectOptions {
@@ -1666,6 +1878,14 @@ export interface FFmpegInput extends MediaContainer {
   h264EncoderArguments?: string[];
   videoDecoderArguments?: string[];
   h264FilterArguments?: string[];
+  /**
+   * Environment variables to set when launching FFmpeg.
+   */
+  env?: { [key: string]: string };
+  /**
+   * Path to a custom FFmpeg binary.
+   */
+  ffmpegPath?: string;
 }
 export interface DeviceInformation {
   model?: string;
@@ -1677,6 +1897,10 @@ export interface DeviceInformation {
   mac?: string;
   metadata?: any;
   managementUrl?: string;
+  deeplink?: {
+    apple?: string;
+    android?: string;
+  };
 }
 /**
  * Device objects are created by DeviceProviders when new devices are discover and synced to Scrypted via the DeviceManager.
@@ -1771,7 +1995,6 @@ export interface EndpointManager {
 
   /**
    * Get an URL that can be externally accessed by anyone with the link. Plugin implementation is responsible for authentication.
-   * @deprecated
    */
   getCloudEndpoint(nativeId?: ScryptedNativeId, options?: {
     /**
@@ -1977,7 +2200,7 @@ export enum MediaPlayerState {
   Paused = "Paused",
   Buffering = "Buffering",
 }
-export type SettingValue = undefined | null | string | number | boolean | string[] | number[];
+export type SettingValue = undefined | null | string | number | boolean | string[] | number[] | ClipPath;
 export type Point = [number, number];
 export type ClipPath = Point[];
 export interface Setting {
@@ -1987,7 +2210,7 @@ export interface Setting {
   subgroup?: string;
   description?: string;
   placeholder?: string;
-  type?: 'string' | 'password' | 'number' | 'boolean' | 'device' | 'integer' | 'button' | 'clippath' | 'interface' | 'qrcode' | 'textarea' | 'date' | 'time' | 'datetime';
+  type?: 'string' | 'password' | 'number' | 'boolean' | 'device' | 'integer' | 'button' | 'clippath' | 'interface' | 'html' | 'textarea' | 'date' | 'time' | 'datetime' | 'day' | 'script';
   /**
    * The range of allowed numbers, if any, when the type is 'number'.
    */
@@ -1997,6 +2220,14 @@ export interface Setting {
   combobox?: boolean;
   deviceFilter?: string;
   multiple?: boolean;
+  /**
+   * Flag that the UI should immediately apply this setting.
+   */
+  immediate?: boolean;
+  /**
+   * Flag that hte UI should open the console.
+   */
+  console?: boolean;
   value?: SettingValue;
 }
 
@@ -2008,6 +2239,7 @@ export interface LauncherApplicationInfo {
   icon?: string;
   description?: string;
   href?: string;
+  cloudHref?: string;
 }
 
 export interface LauncherApplication {
@@ -2101,6 +2333,12 @@ export enum ScryptedInterface {
   ScryptedUser = "ScryptedUser",
   VideoFrameGenerator = 'VideoFrameGenerator',
   StreamService = 'StreamService',
+  TTY = 'TTY',
+  TTYSettings = 'TTYSettings',
+
+  ScryptedSystemDevice = "ScryptedSystemDevice",
+  ScryptedDeviceCreator = "ScryptedDeviceCreator",
+  ScryptedSettings = "ScryptedSettings",
 }
 
 /**
@@ -2264,6 +2502,7 @@ export enum ScryptedMimeTypes {
   Url = 'text/x-uri',
   InsecureLocalUrl = 'text/x-insecure-local-uri',
   LocalUrl = 'text/x-local-uri',
+  ServerId = 'text/x-server-id',
 
   PushEndpoint = 'text/x-push-endpoint',
 
@@ -2295,9 +2534,17 @@ export interface FFmpegTranscode {
 }
 export type FFmpegTranscodeStream = (options: FFmpegTranscode) => Promise<void>;
 
+export interface ForkWorker {
+  terminate(): void;
+  on(event: 'exit', listener: () => void): void;
+  removeListener(event: 'exit', listener: () => void): void;
+  on(event: 'error', listener: () => void): void;
+  removeListener(event: 'error', listener: (e: Error) => void): void;
+  nativeWorker?: NodeChildProcess | NodeWorker;
+}
 export interface PluginFork<T> {
   result: Promise<T>;
-  worker: NodeWorker;
+  worker: ForkWorker;
 }
 
 export declare interface DeviceState {
@@ -2361,6 +2608,14 @@ export interface ConnectOptions extends APIOptions {
   pluginId: string;
 }
 
+export interface ForkOptions {
+  name?: string;
+  filename?: string;
+  runtime?: string;
+  id?: string;
+  nativeId?: ScryptedNativeId;
+}
+
 export interface ScryptedStatic {
   /**
    * @deprecated
@@ -2381,7 +2636,7 @@ export interface ScryptedStatic {
    * Start a new instance of the plugin, returning an instance of the new process
    * and the result of the fork method.
    */
-  fork<T>(): PluginFork<T>;
+  fork<T>(options?: ForkOptions): PluginFork<T>;
   /**
    * Initiate the Scrypted RPC wire protocol on a socket.
    * @param socket

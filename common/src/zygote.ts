@@ -1,19 +1,15 @@
-import sdk, { PluginFork } from '@scrypted/sdk';
-import worker_threads from 'worker_threads';
+import sdk, { ForkOptions, PluginFork } from '@scrypted/sdk';
 import { createAsyncQueue } from './async-queue';
 import os from 'os';
 
 export type Zygote<T> = () => PluginFork<T>;
 
-export function createZygote<T>(): Zygote<T> {
-    if (!worker_threads.isMainThread)
-        return;
-
-    let zygote = sdk.fork<T>();
+export function createZygote<T>(options?: ForkOptions): Zygote<T> {
+    let zygote = sdk.fork<T>(options);
     function* next() {
         while (true) {
             const cur = zygote;
-            zygote = sdk.fork<T>();
+            zygote = sdk.fork<T>(options);
             yield cur;
         }
     }

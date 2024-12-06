@@ -4,7 +4,7 @@ try:
     from typing import TypedDict
 except:
     from typing_extensions import TypedDict
-from typing import Union, Any
+from typing import Union, Any, AsyncGenerator
 
 from .other import *
 
@@ -64,6 +64,9 @@ class MediaPlayerState(str, Enum):
 class PanTiltZoomMovement(str, Enum):
 
     Absolute = "Absolute"
+    Continuous = "Continuous"
+    Home = "Home"
+    Preset = "Preset"
     Relative = "Relative"
 
 class ScryptedDeviceType(str, Enum):
@@ -172,13 +175,18 @@ class ScryptedInterface(str, Enum):
     Scene = "Scene"
     Scriptable = "Scriptable"
     ScryptedDevice = "ScryptedDevice"
+    ScryptedDeviceCreator = "ScryptedDeviceCreator"
     ScryptedPlugin = "ScryptedPlugin"
     ScryptedPluginRuntime = "ScryptedPluginRuntime"
+    ScryptedSettings = "ScryptedSettings"
+    ScryptedSystemDevice = "ScryptedSystemDevice"
     ScryptedUser = "ScryptedUser"
     SecuritySystem = "SecuritySystem"
     Settings = "Settings"
     StartStop = "StartStop"
     StreamService = "StreamService"
+    TTY = "TTY"
+    TTYSettings = "TTYSettings"
     TamperSensor = "TamperSensor"
     TemperatureSetting = "TemperatureSetting"
     Thermometer = "Thermometer"
@@ -209,6 +217,7 @@ class ScryptedMimeTypes(str, Enum):
     RequestMediaObject = "x-scrypted/x-scrypted-request-media-object"
     RequestMediaStream = "x-scrypted/x-scrypted-request-stream"
     SchemePrefix = "x-scrypted/x-scrypted-scheme-"
+    ServerId = "text/x-server-id"
     Url = "text/x-uri"
 
 class SecuritySystemMode(str, Enum):
@@ -258,7 +267,7 @@ class H264Info(TypedDict):
 class ImageOptions(TypedDict):
 
     crop: Any
-    format: ImageFormat
+    format: str
     resize: Any
 
 class ObjectDetectionHistory(TypedDict):
@@ -353,11 +362,11 @@ class RequestVideoStreamOptions(TypedDict):
     fps: float
     h264Info: H264Info
     height: float
-    idrIntervalMillis: float  # Key Frame interval in milliseconds.
     keyframeInterval: float  # Key Frame interval in frames.
     maxBitrate: float
     minBitrate: float
     profile: str
+    quality: float
     width: float
 
 class ScryptedDeviceAccessControl(TypedDict):
@@ -373,6 +382,29 @@ class VideoResource(TypedDict):
     thumbnail: Resource
     video: Resource
 
+class VideoStreamConfiguration(TypedDict):
+
+    bitrate: float
+    bitrateControl: Any | Any
+    bitrateControls: list[str]
+    bitrateRange: tuple[float, float]
+    codec: str
+    codecs: list[str]
+    fps: float
+    fpsRange: tuple[float, float]
+    h264Info: H264Info
+    height: float
+    keyframeInterval: float  # Key Frame interval in frames.
+    keyframeIntervalRange: tuple[float, float]
+    maxBitrate: float
+    minBitrate: float
+    profile: str
+    profiles: list[str]
+    quality: float
+    qualityRange: tuple[float, float]
+    resolutions: list[tuple[float, float]]
+    width: float
+
 class VideoStreamOptions(TypedDict):
 
     bitrate: float
@@ -381,17 +413,12 @@ class VideoStreamOptions(TypedDict):
     fps: float
     h264Info: H264Info
     height: float
-    idrIntervalMillis: float  # Key Frame interval in milliseconds.
     keyframeInterval: float  # Key Frame interval in frames.
     maxBitrate: float
     minBitrate: float
     profile: str
+    quality: float
     width: float
-
-class ImageFormat(TypedDict):
-
-    pass
-
 
 class MediaStreamDestination(TypedDict):
 
@@ -464,6 +491,7 @@ class DeviceCreatorSettings(TypedDict):
 
 class DeviceInformation(TypedDict):
 
+    deeplink: Any
     firmware: str
     ip: str
     mac: str
@@ -514,6 +542,8 @@ class FFmpegInput(TypedDict):
 
     container: str
     destinationVideoBitrate: float
+    env: Any  # Environment variables to set when launching FFmpeg.
+    ffmpegPath: str  # Path to a custom FFmpeg binary.
     h264EncoderArguments: list[str]
     h264FilterArguments: list[str]
     inputArguments: list[str]
@@ -566,6 +596,7 @@ class HumiditySettingStatus(TypedDict):
 
 class LauncherApplicationInfo(TypedDict):
 
+    cloudHref: str
     description: str
     href: str
     icon: str  # Supports: mdi-icon, fa-icon, urls.
@@ -588,6 +619,12 @@ class MediaStatus(TypedDict):
     metadata: Any
     position: float
 
+class MediaStreamConfiguration(TypedDict):
+
+    audio: AudioStreamOptions
+    id: str
+    video: VideoStreamConfiguration
+
 class MediaStreamOptions(TypedDict):
     """Options passed to VideoCamera.getVideoStream to request specific media formats. The audio/video properties may be omitted to indicate no audio/video is available when calling getVideoStreamOptions or no audio/video is requested when calling getVideoStream."""
 
@@ -604,6 +641,7 @@ class MediaStreamOptions(TypedDict):
 class NotifierOptions(TypedDict):
 
     actions: list[NotificationAction]
+    android: Any
     badge: str
     body: str
     bodyWithSubtitle: str
@@ -611,7 +649,7 @@ class NotifierOptions(TypedDict):
     dir: NotificationDirection
     image: str
     lang: str
-    recordedEvent: RecordedEvent
+    recordedEvent: Union[RecordedEvent, Any]
     renotify: bool
     requireInteraction: bool
     silent: bool
@@ -665,15 +703,18 @@ class ObjectsDetected(TypedDict):
 class PanTiltZoomCapabilities(TypedDict):
 
     pan: bool
+    presets: Any  # Preset id mapped to friendly name.
     tilt: bool
     zoom: bool
 
 class PanTiltZoomCommand(TypedDict):
 
-    movement: PanTiltZoomMovement  # Specify the movement origin. If unspecified, the movement will be relative to the current position.
+    movement: PanTiltZoomMovement  # Specify the movement type. If unspecified, the movement will be relative to the current position.
     pan: float  # Ranges between -1 and 1.
+    preset: str  # The preset to move to.
     speed: Any  # The speed of the movement.
     tilt: float  # Ranges between -1 and 1.
+    timeout: float  # The duration of the movement in milliseconds.
     zoom: float  # Ranges between 0 and 1 for max zoom.
 
 class Position(TypedDict):
@@ -794,6 +835,11 @@ class ScryptedRuntimeArguments(TypedDict):
     arguments: list[str]
     executable: str
 
+class ScryptedSystemDeviceInfo(TypedDict):
+
+    deviceCreator: str  # The description of device that will be created by this DeviceCreator. For example: Example Corp Camera or ACME Light Switch.
+    settings: str  # The name of the device as seen in System Settings.
+
 class ScryptedUserAccessControl(TypedDict):
     """ScryptedUserAccessControl describes the list of devices that may be accessed by the user."""
 
@@ -810,9 +856,11 @@ class Setting(TypedDict):
 
     choices: list[str]
     combobox: bool
+    console: bool  # Flag that hte UI should open the console.
     description: str
     deviceFilter: str
     group: str
+    immediate: bool  # Flag that the UI should immediately apply this setting.
     key: str
     multiple: bool
     placeholder: str
@@ -820,7 +868,7 @@ class Setting(TypedDict):
     readonly: bool
     subgroup: str
     title: str
-    type: Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any
+    type: Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any
     value: SettingValue
 
 class TemperatureCommand(TypedDict):
@@ -862,7 +910,7 @@ class VideoFrameGeneratorOptions(TypedDict):
 
     crop: Any
     firstFrameOnly: bool
-    format: ImageFormat
+    format: str
     fps: float
     queue: float
     resize: Any
@@ -1193,7 +1241,7 @@ class ObjectDetection:
     async def detectObjects(self, mediaObject: MediaObject, session: ObjectDetectionSession = None) -> ObjectsDetected:
         pass
 
-    async def generateObjectDetections(self, videoFrames: MediaObject | VideoFrame, session: ObjectDetectionGeneratorSession) -> ObjectDetectionGeneratorResult:
+    async def generateObjectDetections(self, videoFrames: MediaObject | AsyncGenerator[VideoFrame, None], session: ObjectDetectionGeneratorSession) -> AsyncGenerator[ObjectDetectionGeneratorResult, None]:
         pass
 
     async def getDetectionModel(self, settings: Any = None) -> ObjectDetectionModel:
@@ -1388,6 +1436,11 @@ class ScryptedDevice:
         pass
 
 
+class ScryptedDeviceCreator:
+
+
+    pass
+
 class ScryptedPlugin:
 
     async def getPluginJson(self) -> Any:
@@ -1397,6 +1450,16 @@ class ScryptedPlugin:
 class ScryptedPluginRuntime:
 
     scryptedRuntimeArguments: ScryptedRuntimeArguments
+
+class ScryptedSettings:
+
+
+    pass
+
+class ScryptedSystemDevice:
+    """SystemDevices are listed in the Scrypted UI."""
+
+    systemDevice: ScryptedSystemDeviceInfo  # Type of device that will be created by this DeviceCreator. For example: Example Corp Camera or ACME Light Switch.
 
 class ScryptedUser:
     """ScryptedUser represents a user managed by Scrypted. This interface can not be implemented, only extended by Mixins."""
@@ -1439,7 +1502,20 @@ class StartStop:
 class StreamService:
     """Generic bidirectional stream connection."""
 
-    async def connectStream(self, input: Any = None, options: Any = None) -> Any:
+    async def connectStream(self, input: AsyncGenerator[Any, None] = None, options: Any = None) -> AsyncGenerator[Any, None]:
+        pass
+
+
+class TTY:
+    """TTY connection offered by a remote device that can be connected to by an interactive terminal interface.  Implementors should also implement StreamService to handle the actual data transfer."""
+
+
+    pass
+
+class TTYSettings:
+    """TTYSettings allows TTY backends to query plugins for modifications to the (non-)interactive terminal environment."""
+
+    async def getTTYSettings(self) -> Any:
         pass
 
 
@@ -1483,7 +1559,7 @@ class VideoCamera:
 
 class VideoCameraConfiguration:
 
-    async def setVideoStreamOptions(self, options: MediaStreamOptions) -> None:
+    async def setVideoStreamOptions(self, options: MediaStreamOptions) -> MediaStreamConfiguration:
         pass
 
 
@@ -1513,7 +1589,7 @@ class VideoClips:
 
 class VideoFrameGenerator:
 
-    async def generateVideoFrames(self, mediaObject: MediaObject, options: VideoFrameGeneratorOptions = None) -> VideoFrame:
+    async def generateVideoFrames(self, mediaObject: MediaObject, options: VideoFrameGeneratorOptions = None) -> AsyncGenerator[VideoFrame, None]:
         pass
 
 
@@ -1786,6 +1862,7 @@ class ScryptedInterfaceProperty(str, Enum):
     humiditySetting = "humiditySetting"
     fan = "fan"
     applicationInfo = "applicationInfo"
+    systemDevice = "systemDevice"
 
 class ScryptedInterfaceMethods(str, Enum):
     listen = "listen"
@@ -1893,6 +1970,7 @@ class ScryptedInterfaceMethods(str, Enum):
     getScryptedUserAccessControl = "getScryptedUserAccessControl"
     generateVideoFrames = "generateVideoFrames"
     connectStream = "connectStream"
+    getTTYSettings = "getTTYSettings"
 
 class DeviceState:
 
@@ -2390,6 +2468,14 @@ class DeviceState:
     @applicationInfo.setter
     def applicationInfo(self, value: LauncherApplicationInfo):
         self.setScryptedProperty("applicationInfo", value)
+
+    @property
+    def systemDevice(self) -> ScryptedSystemDeviceInfo:
+        return self.getScryptedProperty("systemDevice")
+
+    @systemDevice.setter
+    def systemDevice(self, value: ScryptedSystemDeviceInfo):
+        self.setScryptedProperty("systemDevice", value)
 
 ScryptedInterfaceDescriptors = {
   "ScryptedDevice": {
@@ -3093,6 +3179,35 @@ ScryptedInterfaceDescriptors = {
       "connectStream"
     ],
     "properties": []
+  },
+  "TTY": {
+    "name": "TTY",
+    "methods": [],
+    "properties": []
+  },
+  "TTYSettings": {
+    "name": "TTYSettings",
+    "methods": [
+      "getTTYSettings"
+    ],
+    "properties": []
+  },
+  "ScryptedSystemDevice": {
+    "name": "ScryptedSystemDevice",
+    "methods": [],
+    "properties": [
+      "systemDevice"
+    ]
+  },
+  "ScryptedDeviceCreator": {
+    "name": "ScryptedDeviceCreator",
+    "methods": [],
+    "properties": []
+  },
+  "ScryptedSettings": {
+    "name": "ScryptedSettings",
+    "methods": [],
+    "properties": []
   }
 }
 
@@ -3135,7 +3250,8 @@ class WritableDeviceState:
 
 class Image:
 
-    format: ImageFormat  # The in raw memory format of this image. Operations of this image may only safely request this format, or a compressed format such as jpg.
+    ffmpegFormats: bool
+    format: str  # The in raw memory format of this image. Operations of this image may only safely request this format, or a compressed format such as jpg.
     height: float
     width: float
     async def close(self) -> None:

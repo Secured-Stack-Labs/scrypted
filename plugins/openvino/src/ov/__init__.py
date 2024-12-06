@@ -30,6 +30,7 @@ prepareExecutor = concurrent.futures.ThreadPoolExecutor(1, "OpenVINO-Prepare")
 
 availableModels = [
     "Default",
+    "scrypted_yolov9c_relu_int8_320",
     "scrypted_yolov10m_320",
     "scrypted_yolov10s_320",
     "scrypted_yolov10n_320",
@@ -37,12 +38,16 @@ availableModels = [
     "scrypted_yolov6n_320",
     "scrypted_yolov6s_320",
     "scrypted_yolov9c_320",
+    "scrypted_yolov9m_320",
+    "scrypted_yolov9s_320",
+    "scrypted_yolov9t_320",
     "scrypted_yolov8n_320",
     "ssd_mobilenet_v1_coco",
     "ssdlite_mobilenet_v2",
     "yolo-v3-tiny-tf",
     "yolo-v4-tiny-tf",
 ]
+
 
 def parse_label_contents(contents: str):
     lines = contents.splitlines()
@@ -85,7 +90,10 @@ def dump_device_properties(core):
 
 
 class OpenVINOPlugin(
-    PredictPlugin, scrypted_sdk.BufferConverter, scrypted_sdk.Settings, scrypted_sdk.DeviceProvider
+    PredictPlugin,
+    scrypted_sdk.BufferConverter,
+    scrypted_sdk.Settings,
+    scrypted_sdk.DeviceProvider,
 ):
     def __init__(self, nativeId: str | None = None):
         super().__init__(nativeId=nativeId)
@@ -96,58 +104,78 @@ class OpenVINOPlugin(
         self.available_devices = available_devices
         print("available devices: %s" % available_devices)
 
-        mode = self.storage.getItem("mode")
+        nvidia = False
+        iris_xe = False
+        arc = False
+        npu = False
+        gpu = False
+
+        dgpus = []
+        # search for NVIDIA dGPU, as that is not preferred by AUTO for some reason?
+        # todo: create separate core per NVIDIA dGPU as inference does not seem to
+        # be distributed to multiple dGPU.
+        for device in self.available_devices:
+            try:
+                full_device_name = self.core.get_property(device, "FULL_DEVICE_NAME")
+                if "Iris" in full_device_name and "Xe" in full_device_name:
+                    iris_xe = True
+                if "Arc" in full_device_name:
+                    arc = True
+                if "NVIDIA" in full_device_name and "dGPU" in full_device_name:
+                    dgpus.append(device)
+                    nvidia = True
+                if "NPU" in device:
+                    npu = True
+                if "GPU" in device:
+                    gpu = True
+            except:
+                pass
+
+        mode = self.storage.getItem("mode") or "Default"
         if mode == "Default":
             mode = "AUTO"
 
-            dgpus = []
-            # search for NVIDIA dGPU, as that is not preferred by AUTO for some reason?
-            # todo: create separate core per NVIDIA dGPU as inference does not seem to
-            # be distributed to multiple dGPU.
-            for device in self.available_devices:
-                try:
-                    full_device_name = self.core.get_property(device, "FULL_DEVICE_NAME")
-                    if "NVIDIA" in full_device_name and "dGPU" in full_device_name:
-                        dgpus.append(device)
-                except:
-                    pass
-
-            if len(dgpus):
+            if npu:
+                if gpu:
+                    mode = f"AUTO:NPU,GPU,CPU"
+                else:
+                    mode = f"AUTO:NPU,CPU"
+            elif len(dgpus):
                 mode = f"AUTO:{','.join(dgpus)},CPU"
+            # forcing GPU can cause crashes on older GPU.
+            elif gpu:
+                mode = f"GPU"
 
         mode = mode or "AUTO"
         self.mode = mode
 
-        precision = self.storage.getItem("precision") or "Default"
-        if precision == "Default":
-            using_mode = mode
-            if using_mode == "AUTO":
-                if "GPU" in available_devices:
-                    using_mode = "GPU"
-
-            # FP16 is smaller and the default export. no tangible performance difference.
-            # https://docs.openvino.ai/2023.3/openvino_docs_OV_Converter_UG_Conversion_Options.html
-            precision = "FP16"
-
+        # todo remove this, don't need to export two models anymore.
+        precision = "FP16"
         self.precision = precision
 
         model = self.storage.getItem("model") or "Default"
         if model == "Default" or model not in availableModels:
             if model != "Default":
                 self.storage.setItem("model", "Default")
-            model = "scrypted_yolov10n_320"
+            if arc or nvidia or npu:
+                model = "scrypted_yolov9c_320"
+            elif iris_xe:
+                model = "scrypted_yolov9s_320"
+            else:
+                model = "scrypted_yolov9t_320"
         self.yolo = "yolo" in model
+        self.scrypted_yolov9 = "scrypted_yolov9" in model
         self.scrypted_yolov10 = "scrypted_yolov10" in model
         self.scrypted_yolo_nas = "scrypted_yolo_nas" in model
         self.scrypted_yolo = "scrypted_yolo" in model
         self.scrypted_model = "scrypted" in model
+        self.scrypted_yuv = "yuv" in model
         self.sigmoid = model == "yolo-v4-tiny-tf"
+        self.modelName = model
 
-        print(f"model/mode/precision: {model}/{mode}/{precision}")
+        ovmodel = "best-converted" if self.scrypted_yolov9 else "best" if self.scrypted_model else model
 
-        ovmodel = "best" if self.scrypted_model else model
-
-        model_version = "v5"
+        model_version = "v7"
         xmlFile = self.downloadFile(
             f"https://github.com/koush/openvino-models/raw/main/{model}/{precision}/{ovmodel}.xml",
             f"{model_version}/{model}/{precision}/{ovmodel}.xml",
@@ -181,19 +209,29 @@ class OpenVINOPlugin(
 
         try:
             self.compiled_model = self.core.compile_model(xmlFile, mode)
-            print(
-                "EXECUTION_DEVICES",
-                self.compiled_model.get_property("EXECUTION_DEVICES"),
-            )
         except:
             import traceback
 
             traceback.print_exc()
-            print("Reverting all settings.")
-            self.storage.removeItem("mode")
-            self.storage.removeItem("model")
-            self.storage.removeItem("precision")
-            self.requestRestart()
+
+            if "GPU" in mode:
+                try:
+                    print(f"{mode} mode failed, reverting to AUTO.")
+                    mode = "AUTO"
+                    self.mode = mode
+                    self.compiled_model = self.core.compile_model(xmlFile, mode)
+                except:
+                    print("Reverting all settings.")
+                    self.storage.removeItem("mode")
+                    self.storage.removeItem("model")
+                    self.storage.removeItem("precision")
+                    self.requestRestart()
+
+        print(
+            "EXECUTION_DEVICES",
+            self.compiled_model.get_property("EXECUTION_DEVICES"),
+        )
+        print(f"model/mode/precision: {model}/{mode}/{precision}")
 
         # mobilenet 1,300,300,3
         # yolov3/4 1,416,416,3
@@ -240,17 +278,6 @@ class OpenVINOPlugin(
                 "value": mode,
                 "combobox": True,
             },
-            {
-                "key": "precision",
-                "title": "Precision",
-                "description": "The model floating point precision. FP16 is recommended for GPU. FP32 is recommended for CPU.",
-                "choices": [
-                    "Default",
-                    "FP16",
-                    "FP32",
-                ],
-                "value": precision,
-            },
         ]
 
     async def putSetting(self, key: str, value: SettingValue):
@@ -264,6 +291,11 @@ class OpenVINOPlugin(
 
     def get_input_size(self) -> Tuple[int, int]:
         return [self.model_dim, self.model_dim]
+
+    def get_input_format(self):
+        if self.scrypted_yuv:
+            return "yuvj444p"
+        return super().get_input_format()
 
     async def detect_once(self, input: Image.Image, settings: Any, src_size, cvss):
         def predict(input_tensor):
@@ -311,7 +343,7 @@ class OpenVINOPlugin(
                 return objs
 
             output = infer_request.get_output_tensor(0)
-            for values in output.data[0][0].astype(float):
+            for values in output.data[0][0]:
                 valid, index, confidence, l, t, r, b = values
                 if valid == -1:
                     break
@@ -329,14 +361,24 @@ class OpenVINOPlugin(
 
             return objs
 
-
-        def prepare(): 
+        def prepare():
             # the input_tensor can be created with the shared_memory=True parameter,
             # but that seems to cause issues on some platforms.
             if self.scrypted_yolo:
-                im = np.array(input)
-                im = np.expand_dims(input, axis=0)
-                im = im.transpose((0, 3, 1, 2))  # BHWC to BCHW, (n, 3, h, w)
+                if not self.scrypted_yuv:
+                    im = np.expand_dims(input, axis=0)
+                    im = im.transpose((0, 3, 1, 2))  # BHWC to BCHW, (n, 3, h, w)
+                else:
+                    # when a yuv image is requested, it may be either planar or interleaved
+                    # as as hack, the input will come as RGB if already planar.
+                    if input.mode != "RGB":
+                        im = np.array(input)
+                        im = im.reshape((1, self.model_dim, self.model_dim, 3))
+                        im = im.transpose((0, 3, 1, 2))  # BHWC to BCHW, (n, 3, h, w)
+
+                    else:
+                        im = np.array(input)
+                        im = im.reshape((1, 3, self.model_dim, self.model_dim))
                 im = im.astype(np.float32) / 255.0
                 im = np.ascontiguousarray(im)  # contiguous
                 input_tensor = ov.Tensor(array=im)

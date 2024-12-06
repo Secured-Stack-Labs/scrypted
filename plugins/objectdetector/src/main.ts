@@ -162,7 +162,7 @@ class ObjectDetectionMixin extends SettingsMixinDeviceBase<VideoCamera & Camera 
   getCurrentSettings() {
     const settings = this.model.settings;
     if (!settings)
-      return { id : this.id };
+      return { id: this.id };
 
     const ret: { [key: string]: any } = {};
     for (const setting of settings) {
@@ -334,13 +334,11 @@ class ObjectDetectionMixin extends SettingsMixinDeviceBase<VideoCamera & Camera 
     const stream = await this.cameraDevice.getVideoStream({
       prebuffer: this.model.prebuffer,
       destination,
-      // ask rebroadcast to mute audio, not needed.
-      audio: null,
     });
 
     if (this.model.decoder) {
       if (!options?.suppress)
-      this.console.log(this.objectDetection.name, '(with builtin decoder)');
+        this.console.log(this.objectDetection.name, '(with builtin decoder)');
       return stream;
     }
 
@@ -419,7 +417,7 @@ class ObjectDetectionMixin extends SettingsMixinDeviceBase<VideoCamera & Camera 
     const frameGenerator = this.model.decoder ? undefined : this.getFrameGenerator();
     for await (const detected of
       await sdk.connectRPCObject(
-        await this.objectDetection.generateObjectDetections( 
+        await this.objectDetection.generateObjectDetections(
           await this.createFrameGenerator(
             frameGenerator,
             options,
@@ -458,10 +456,10 @@ class ObjectDetectionMixin extends SettingsMixinDeviceBase<VideoCamera & Camera 
       if (!this.hasMotionType) {
         this.plugin.trackDetection();
 
-        // const numZonedDetections = zonedDetections.filter(d => d.className !== 'motion').length;
-        // const numOriginalDetections = originalDetections.filter(d => d.className !== 'motion').length;
-        // if (numZonedDetections !== numOriginalDetections)
-        //   this.console.log('Zone filtered detections:', numZonedDetections - numOriginalDetections);
+        const numZonedDetections = zonedDetections.filter(d => d.className !== 'motion').length;
+        const numOriginalDetections = originalDetections.filter(d => d.className !== 'motion').length;
+        if (numZonedDetections !== numOriginalDetections)
+          currentDetections.set('filtered', (currentDetections.get('filtered') || 0) + 1);
 
         for (const d of detected.detected.detections) {
           currentDetections.set(d.className, Math.max(currentDetections.get(d.className) || 0, d.score));
@@ -612,7 +610,7 @@ class ObjectDetectionMixin extends SettingsMixinDeviceBase<VideoCamera & Camera 
     this.detections.set(detectionId, detectionInput);
     setTimeout(() => {
       this.detections.delete(detectionId);
-    }, 2000);
+    }, 10000);
   }
 
   async getNativeObjectTypes(): Promise<ObjectDetectionTypes> {
@@ -661,12 +659,11 @@ class ObjectDetectionMixin extends SettingsMixinDeviceBase<VideoCamera & Camera 
       frameGenerator = this.plugin.storageSettings.values.defaultDecoder || 'Default';
 
     const pipelines = getAllDevices().filter(d => d.interfaces.includes(ScryptedInterface.VideoFrameGenerator));
-    const webcodec = process.env.SCRYPTED_INSTALL_ENVIRONMENT === 'electron' ? sdk.systemManager.getDeviceById('@scrypted/electron-core', 'webcodec') : undefined;
     const webassembly = sdk.systemManager.getDeviceById('@scrypted/nvr', 'decoder') || undefined;
     const gstreamer = sdk.systemManager.getDeviceById('@scrypted/python-codecs', 'gstreamer') || undefined;
     const libav = sdk.systemManager.getDeviceById('@scrypted/python-codecs', 'libav') || undefined;
     const ffmpeg = sdk.systemManager.getDeviceById('@scrypted/objectdetector', 'ffmpeg') || undefined;
-    const use = pipelines.find(p => p.name === frameGenerator) || webcodec || webassembly || gstreamer || libav || ffmpeg;
+    const use = pipelines.find(p => p.name === frameGenerator) || webassembly || gstreamer || libav || ffmpeg;
     return use.id;
   }
 
@@ -1013,6 +1010,57 @@ export class ObjectDetectionPlugin extends AutoenableMixinProvider implements Se
   cpuTimer = new CpuTimer();
   cpuUsage = 0;
 
+  constructor(nativeId?: ScryptedNativeId) {
+    super(nativeId, 'v5');
+
+    this.systemDevice = {
+      deviceCreator: 'Smart Motion Sensor',
+    };
+
+    process.nextTick(() => {
+      sdk.deviceManager.onDeviceDiscovered({
+        name: 'FFmpeg Frame Generator',
+        type: ScryptedDeviceType.Builtin,
+        interfaces: [
+          ScryptedInterface.VideoFrameGenerator,
+        ],
+        nativeId: 'ffmpeg',
+      })
+    });
+
+    setInterval(() => {
+      this.cpuUsage = this.cpuTimer.sample();
+      // this.console.log('cpu usage', Math.round(this.cpuUsage * 100));
+
+      const runningDetections = this.runningObjectDetections;
+
+      let allowStart = 2;
+      // always allow 2 cameras to push past cpu throttling
+      if (runningDetections.length > 2) {
+        const cpuPerDetector = this.cpuUsage / runningDetections.length;
+        allowStart = Math.ceil(1 / cpuPerDetector) - runningDetections.length;
+        if (allowStart <= 0)
+          return;
+      }
+
+      const idleDetectors = [...this.currentMixins.values()]
+        .map(d => [...d.currentMixins.values()].filter(dd => !dd.hasMotionType)).flat()
+        .filter(c => !c.detectorRunning);
+
+      for (const notRunning of idleDetectors) {
+        if (notRunning.maybeStartDetection()) {
+          allowStart--;
+          if (allowStart <= 0)
+            return;
+        }
+      }
+    }, 10000)
+  }
+
+  checkHasEnabledMixin(device: ScryptedDevice): boolean {
+    return false;
+  }
+
   pruneOldStatistics() {
     const now = Date.now();
     for (const [k, v] of this.objectDetectionStatistics.entries()) {
@@ -1099,49 +1147,6 @@ export class ObjectDetectionPlugin extends AutoenableMixinProvider implements Se
 
     this.statsSnapshotDetections = 0;
     this.statsSnapshotTime = now;
-  }
-
-  constructor(nativeId?: ScryptedNativeId) {
-    super(nativeId, 'v5');
-
-    process.nextTick(() => {
-      sdk.deviceManager.onDeviceDiscovered({
-        name: 'FFmpeg Frame Generator',
-        type: ScryptedDeviceType.Builtin,
-        interfaces: [
-          ScryptedInterface.VideoFrameGenerator,
-        ],
-        nativeId: 'ffmpeg',
-      })
-    });
-
-    setInterval(() => {
-      this.cpuUsage = this.cpuTimer.sample();
-      // this.console.log('cpu usage', Math.round(this.cpuUsage * 100));
-
-      const runningDetections = this.runningObjectDetections;
-
-      let allowStart = 2;
-      // always allow 2 cameras to push past cpu throttling
-      if (runningDetections.length > 2) {
-        const cpuPerDetector = this.cpuUsage / runningDetections.length;
-        allowStart = Math.ceil(1 / cpuPerDetector) - runningDetections.length;
-        if (allowStart <= 0)
-          return;
-      }
-
-      const idleDetectors = [...this.currentMixins.values()]
-        .map(d => [...d.currentMixins.values()].filter(dd => !dd.hasMotionType)).flat()
-        .filter(c => !c.detectorRunning);
-
-      for (const notRunning of idleDetectors) {
-        if (notRunning.maybeStartDetection()) {
-          allowStart--;
-          if (allowStart <= 0)
-            return;
-        }
-      }
-    }, 10000)
   }
 
   async getDevice(nativeId: string): Promise<any> {

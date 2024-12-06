@@ -2,13 +2,12 @@ import { createBindUdp, listenZeroSingleClient } from '@scrypted/common/src/list
 import { sleep } from '@scrypted/common/src/sleep';
 import { RtspServer } from '@scrypted/common/src/rtsp-server';
 import { addTrackControls, parseSdp } from '@scrypted/common/src/sdp-utils';
-import sdk, { BinarySensor, Camera, DeviceProvider, FFmpegInput, HttpRequest, HttpRequestHandler, HttpResponse, Intercom, MediaObject, MediaStreamUrl, MotionSensor, PictureOptions, Reboot, ResponseMediaStreamOptions, ScryptedDeviceBase, ScryptedInterface, ScryptedMimeTypes, Setting, Settings, SettingValue, VideoCamera, VideoClip, VideoClipOptions, VideoClips } from '@scrypted/sdk';
+import sdk, { BinarySensor, Camera, DeviceProvider, FFmpegInput, HttpRequest, HttpRequestHandler, HttpResponse, Intercom, MediaObject, MediaStreamUrl, MotionSensor, PictureOptions, Reboot, ResponseMediaStreamOptions, ScryptedDeviceBase, ScryptedMimeTypes, Setting, Settings, SettingValue, VideoCamera, VideoClip, VideoClipOptions, VideoClips } from '@scrypted/sdk';
 import { SipCallSession } from '../../sip/src/sip-call-session';
 import { RtpDescription, getPayloadType, getSequenceNumber, isRtpMessagePayloadType, isStunMessage } from '../../sip/src/rtp-utils';
-import { VoicemailHandler } from './bticino-voicemailHandler';
 import { CompositeSipMessageHandler } from '../../sip/src/compositeSipMessageHandler';
 import { SipHelper } from './sip-helper';
-import child_process, { ChildProcess } from 'child_process';
+import child_process from 'child_process';
 import { BticinoStorageSettings } from './storage-settings';
 import { BticinoSipPlugin } from './main';
 import { BticinoSipLock } from './bticino-lock';
@@ -29,7 +28,6 @@ import { ControllerApi } from './c300x-controller-api';
 import { BticinoAswmSwitch } from './bticino-aswm-switch';
 import { BticinoMuteSwitch } from './bticino-mute-switch';
 
-const STREAM_TIMEOUT = 65000;
 const { mediaManager } = sdk;
 const BTICINO_CLIPS = path.join(process.env.SCRYPTED_PLUGIN_VOLUME, 'bticino-clips');
 
@@ -38,16 +36,14 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
     private session: SipCallSession
     private remoteRtpDescription: Promise<RtpDescription>
     private forwarder
-    private refreshTimeout: NodeJS.Timeout
     public requestHandlers: CompositeSipMessageHandler = new CompositeSipMessageHandler()
     public incomingCallRequest : SipRequest
     private settingsStorage: BticinoStorageSettings = new BticinoStorageSettings( this )
-    private voicemailHandler : VoicemailHandler = new VoicemailHandler(this)
     private inviteHandler : InviteHandler = new InviteHandler(this)
     private controllerApi : ControllerApi = new ControllerApi(this)
     private muteSwitch : BticinoMuteSwitch
     private aswmSwitch : BticinoAswmSwitch
-    private deferredCleanup
+    private deferredCleanup: () => void
     private currentMediaObject : Promise<MediaObject>
     private lastImageRefresh : number
     //TODO: randomize this
@@ -60,7 +56,7 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
 
     constructor(nativeId: string, public provider: BticinoSipPlugin) {
         super(nativeId)
-        this.requestHandlers.add( this.voicemailHandler ).add( this.inviteHandler )
+        this.requestHandlers.add( this.inviteHandler )
         this.persistentSipManager = new PersistentSipManager( this );
         (async() => {
             this.doorbellWebhookUrl = await this.doorbellWebhookEndpoint()
@@ -149,7 +145,7 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
             }).on('error', (error) => {
                 this.console.error(error)
                 reject(error)
-            } ).end(); ;                    
+            } ).end();
         });
     }
 
@@ -283,8 +279,7 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
                 // get a proxy object to make sure we pass prebuffer when already watching a stream
                 let cam : VideoCamera = sdk.systemManager.getDeviceById<VideoCamera>(this.id)
                 let vs : MediaObject = await cam.getVideoStream()
-                let buf : Buffer = await mediaManager.convertMediaObjectToBuffer(vs, 'image/jpeg');
-                this.cachedImage = buf
+                this.cachedImage = await mediaManager.convertMediaObjectToBuffer(vs, 'image/jpeg');
                 this.lastImageRefresh = new Date().getTime()
                 this.console.log(`Camera picture updated and cached: ${this.lastImageRefresh} + cache time: ${thumbnailCacheTime} < ${now}`)
     
@@ -349,19 +344,13 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
         this.forwarder = undefined
     }
 
-    resetStreamTimeout() {
-        this.log.d('starting/refreshing stream')
-        clearTimeout(this.refreshTimeout)
-        this.refreshTimeout = setTimeout(() => this.stopSession(), STREAM_TIMEOUT)
-    }
-
     hasActiveCall() {
         return this.session;
     }
 
     stopSession() {
         if (this.session) {
-            this.log.d('ending sip session')
+            this.console.log('ending sip session')
             this.session.stop()
             this.session = undefined
         }
@@ -406,7 +395,7 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
                     if (this.session === sip)
                         this.session = undefined
                     try {
-                        this.log.d('cleanup(): stopping sip session.')
+                        this.console.log('cleanup(): stopping sip session.')
                         sip?.stop()
                         this.currentMediaObject = undefined
                     }
@@ -479,7 +468,7 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
 
                 this.session = sip
 
-                videoSplitter.server.on('message', (message, rinfo) => {
+                videoSplitter.server.on('message', (message:Buffer) => {
                      if ( !isStunMessage(message)) {
                             const isRtpMessage = isRtpMessagePayloadType(getPayloadType(message));
                             if (!isRtpMessage)
@@ -498,7 +487,7 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
                         }
                 });
 
-                audioSplitter.server.on('message', (message, rinfo ) => {
+                audioSplitter.server.on('message', (message:Buffer) => {
                         if ( !isStunMessage(message)) {
                             const isRtpMessage = isRtpMessagePayloadType(getPayloadType(message));
                             if (!isRtpMessage)
@@ -617,13 +606,17 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
 
     async getDevice(nativeId: string) : Promise<any> {
         if( nativeId && nativeId.endsWith('-aswm-switch')) {
-            this.aswmSwitch = new BticinoAswmSwitch(this, this.voicemailHandler)
+            this.aswmSwitch = new BticinoAswmSwitch(this)
+            this.aswmSwitch.info = this.info
             return this.aswmSwitch
         } else if( nativeId && nativeId.endsWith('-mute-switch') ) {
             this.muteSwitch = new BticinoMuteSwitch(this)
+            this.muteSwitch.info = this.info
             return this.muteSwitch
         }
-        return new BticinoSipLock(this)
+        const lock = new BticinoSipLock(this)
+        lock.info = this.info
+        return lock
     }
 
     async releaseDevice(id: string, nativeId: string): Promise<void> {
@@ -633,7 +626,6 @@ export class BticinoSipCamera extends ScryptedDeviceBase implements MotionSensor
             this.muteSwitch.cancelTimer()
         } else {
             this.stopIntercom()
-            this.voicemailHandler.cancelTimer()
             this.persistentSipManager.cancelTimer()        
             this.controllerApi.cancelTimer()
         }

@@ -1,4 +1,4 @@
-import { NodeThreadWorker } from "./runtime/node-thread-worker";
+import { RuntimeWorker } from "./runtime/runtime-worker";
 
 export interface PluginStats {
     type: 'stats',
@@ -6,12 +6,16 @@ export interface PluginStats {
     memoryUsage: NodeJS.MemoryUsage;
 }
 
-export function startStatsUpdater(allMemoryStats: Map<NodeThreadWorker, NodeJS.MemoryUsage>, updateStats: (stats: PluginStats) => void) {
+export function startStatsUpdater(allMemoryStats: Map<RuntimeWorker, NodeJS.MemoryUsage>, updateStats: (stats: PluginStats) => void) {
     setInterval(() => {
-        const cpuUsage = process.cpuUsage();
+        let cpuUsage: NodeJS.CpuUsage;
+        let memoryUsage: NodeJS.MemoryUsage;
+        if (process.cpuUsage)
+            cpuUsage = process.cpuUsage();
+
         allMemoryStats.set(undefined, process.memoryUsage());
 
-        const memoryUsage: NodeJS.MemoryUsage = {
+        memoryUsage = {
             rss: 0,
             heapTotal: 0,
             heapUsed: 0,
@@ -20,6 +24,8 @@ export function startStatsUpdater(allMemoryStats: Map<NodeThreadWorker, NodeJS.M
         }
 
         for (const mu of allMemoryStats.values()) {
+            if (!mu)
+                continue;
             memoryUsage.rss += mu.rss;
             memoryUsage.heapTotal += mu.heapTotal;
             memoryUsage.heapUsed += mu.heapUsed;

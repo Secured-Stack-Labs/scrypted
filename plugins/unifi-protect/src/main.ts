@@ -6,7 +6,7 @@ import axios from "axios";
 import { UnifiCamera } from "./camera";
 import { UnifiLight } from "./light";
 import { UnifiLock } from "./lock";
-import { debounceMotionDetected } from "./motion";
+import { debounceFingerprintDetected, debounceMotionDetected } from "./camera-sensors";
 import { UnifiSensor } from "./sensor";
 import { FeatureFlagsShim, LastSeenShim } from "./shim";
 import { ProtectApi, ProtectApiUpdates, ProtectNvrUpdatePayloadCameraUpdate, ProtectNvrUpdatePayloadEventAdd } from "./unifi-protect";
@@ -161,7 +161,7 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
                 const unifiCamera = this.cameras.get(nativeId);
 
                 if (!unifiCamera) {
-                    this.console.log('unknown device event, sync needed?', payload);
+                    this.console.log('unknown device event, sync needed?', payload, nativeId);
                     return;
                 }
 
@@ -219,6 +219,15 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
                     }
                     else if (payload.type === 'motion') {
                         debounceMotionDetected(unifiCamera);
+                    }
+                    else if (payload.type === 'fingerprintIdentified') {
+                        const anypay = payload as any;
+                        const userId: string = anypay.metadata?.fingerprint?.userId || anypay.metadata?.fingerprint?.ulpId;
+                        if (userId) {
+                            debounceFingerprintDetected(unifiCamera);
+                            detections[0].label = userId;
+                            detections[0].labelScore = 1;
+                        }
                     }
                 }
 
@@ -321,6 +330,10 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
                     this.console.log('skipping camera that is adopted by another nvr', camera.id, camera.name);
                     continue;
                 }
+                if (!camera.isAdopted) {
+                    this.console.log('skipping camera that is not adopted', camera.id, camera.name);
+                    continue;
+                }
 
                 let needUpdate = false;
                 for (const channel of camera.channels) {
@@ -353,6 +366,7 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
                         model: camera.type,
                         firmware: camera.firmwareVersion,
                         version: camera.hardwareRevision,
+                        ip: camera.host,
                         serialNumber: camera.id,
                         mac: camera.mac,
                         managementUrl,
@@ -399,6 +413,7 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
                     info: {
                         manufacturer: 'Ubiquiti',
                         model: sensor.type,
+                        ip: sensor.host,
                         firmware: sensor.firmwareVersion,
                         version: sensor.hardwareRevision,
                         serialNumber: sensor.id,
@@ -426,6 +441,7 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
                     info: {
                         manufacturer: 'Ubiquiti',
                         model: light.type,
+                        ip: light.host,
                         firmware: light.firmwareVersion,
                         version: light.hardwareRevision,
                         serialNumber: light.id,
@@ -450,6 +466,7 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
                     info: {
                         manufacturer: 'Ubiquiti',
                         model: lock.type,
+                        ip: lock.host,
                         firmware: lock.firmwareVersion,
                         version: lock.hardwareRevision.toString(),
                         serialNumber: lock.id,
@@ -474,31 +491,60 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
 
             // handle package cameras as a sub device
             for (const camera of this.api.cameras) {
-                if (!(camera.featureFlags as any as FeatureFlagsShim).hasPackageCamera)
+                const devices: Device[] = [];
+
+                const providerNativeId = this.getNativeId(camera, true);
+
+                if ((camera.featureFlags as any as FeatureFlagsShim).hasPackageCamera) {
+                    const nativeId = providerNativeId + '-packageCamera';
+                    const d: Device = {
+                        providerNativeId,
+                        name: camera.name + ' Package Camera',
+                        nativeId,
+                        info: {
+                            manufacturer: 'Ubiquiti',
+                            model: camera.type,
+                            firmware: camera.firmwareVersion,
+                            version: camera.hardwareRevision,
+                            serialNumber: camera.id,
+                        },
+                        interfaces: [
+                            ScryptedInterface.Camera,
+                            ScryptedInterface.VideoCamera,
+                            ScryptedInterface.MotionSensor,
+                        ],
+                        type: ScryptedDeviceType.Camera,
+                    };
+                    devices.push(d);
+                }
+
+                if ((camera.featureFlags as any as FeatureFlagsShim).hasFingerprintSensor) {
+                    const nativeId = providerNativeId + '-fingerprintSensor';
+                    const d: Device = {
+                        providerNativeId,
+                        name: camera.name + ' Fingerprint Sensor',
+                        nativeId,
+                        info: {
+                            manufacturer: 'Ubiquiti',
+                            model: camera.type,
+                            firmware: camera.firmwareVersion,
+                            version: camera.hardwareRevision,
+                            serialNumber: camera.id,
+                        },
+                        interfaces: [
+                            ScryptedInterface.BinarySensor,
+                        ],
+                        type: ScryptedDeviceType.Sensor,
+                    };
+                    devices.push(d);
+                }
+
+                if (!devices.length)
                     continue;
-                const nativeId = camera.id + '-packageCamera';
-                const d: Device = {
-                    providerNativeId: this.getNativeId(camera, true),
-                    name: camera.name + ' Package Camera',
-                    nativeId,
-                    info: {
-                        manufacturer: 'Ubiquiti',
-                        model: camera.type,
-                        firmware: camera.firmwareVersion,
-                        version: camera.hardwareRevision,
-                        serialNumber: camera.id,
-                    },
-                    interfaces: [
-                        ScryptedInterface.Camera,
-                        ScryptedInterface.VideoCamera,
-                        ScryptedInterface.MotionSensor,
-                    ],
-                    type: ScryptedDeviceType.Camera,
-                };
 
                 await deviceManager.onDevicesChanged({
                     providerNativeId: this.getNativeId(camera, true),
-                    devices: [d],
+                    devices,
                 });
             }
         }
@@ -594,6 +640,7 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
                 anonymousDeviceId: {},
                 id: {},
                 nativeId: {},
+                host: {},
             },
         }
     });
@@ -603,12 +650,16 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
         return this.storageSettings.values.idMaps.nativeId?.[nativeId] || nativeId;
     }
 
-    getNativeId(device: { id?: string, mac?: string; anonymousDeviceId?: string }, update: boolean) {
-        const { id, mac, anonymousDeviceId } = device;
+    getNativeId(device: { id?: string, mac?: string; anonymousDeviceId?: string, host?: string }, update: boolean) {
+        const { id, mac, anonymousDeviceId, host } = device;
         const idMaps = this.storageSettings.values.idMaps;
 
         // try to find an existing nativeId given the mac and anonymous device id
-        const found = (mac && idMaps.mac[mac]) || (anonymousDeviceId && idMaps.anonymousDeviceId[anonymousDeviceId]);
+        const found = (mac && idMaps.mac[mac])
+            || (anonymousDeviceId && idMaps.anonymousDeviceId[anonymousDeviceId])
+            || (id && idMaps.id[id])
+            || (host && idMaps.host[host])
+            ;
 
         // use the found id if one exists (device got provisioned a new id), otherwise use the id provided by the device.
         const nativeId = found || id;
@@ -616,7 +667,7 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
         if (!update)
             return nativeId;
 
-        // map the mac and anonymous device id to the native id.
+        // map the mac, host, and anonymous device id to the native id.
         if (mac) {
             idMaps.mac ||= {};
             idMaps.mac[mac] = nativeId;
@@ -624,6 +675,10 @@ export class UnifiProtect extends ScryptedDeviceBase implements Settings, Device
         if (anonymousDeviceId) {
             idMaps.anonymousDeviceId ||= {};
             idMaps.anonymousDeviceId[anonymousDeviceId] = nativeId;
+        }
+        if (host) {
+            idMaps.host ||= {};
+            idMaps.host[host] = nativeId;
         }
 
         // map the id and native id to each other.

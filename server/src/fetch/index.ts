@@ -7,7 +7,10 @@ export interface HttpFetchOptionsBase<B> {
     signal?: AbortSignal,
     timeout?: number;
     rejectUnauthorized?: boolean;
-    ignoreStatusCode?: boolean;
+    /**
+     * Checks the status code. Defaults to true.
+     */
+    checkStatusCode?: boolean | ((statusCode: number) => boolean);
     body?: B | string | ArrayBufferView | any;
     withCredentials?: boolean;
 }
@@ -40,6 +43,7 @@ export function fetchStatusCodeOk(statusCode: number) {
 export function checkStatus(statusCode: number) {
     if (!fetchStatusCodeOk(statusCode))
         throw new Error(`http response statusCode ${statusCode}`);
+    return true;
 }
 
 export function getFetchMethod(options: HttpFetchOptions<any>) {
@@ -130,7 +134,7 @@ export function createHeadersArray(headers: HeadersInit | undefined): [string, s
  * @returns Returns the body and Content-Type header that was set.
  */
 export function createStringOrBufferBody(headers: [string, string][], body: any) {
-    let contentType: string;
+    let contentType: string | undefined;
     if (typeof body === 'object') {
         body = JSON.stringify(body);
         contentType = 'application/json';
@@ -139,8 +143,13 @@ export function createStringOrBufferBody(headers: [string, string][], body: any)
         contentType = 'text/plain';
     }
 
-    if (!hasHeader(headers, 'Content-Type'))
+    if (contentType && !hasHeader(headers, 'Content-Type'))
         setHeader(headers, 'Content-Type', contentType);
+
+    if (!hasHeader(headers, 'Content-Length')) {
+        body = Buffer.from(body);
+        setHeader(headers, 'Content-Length', body.length.toString());
+    }
     return body;
 }
 
@@ -171,13 +180,13 @@ export async function domFetch<T extends HttpFetchOptions<BodyInit>>(options: T)
         body = createStringOrBufferBody(headers, body);
     }
 
-    let controller: AbortController;
+    let controller: AbortController | undefined;
     let timeout: NodeJS.Timeout;
     if (options.timeout) {
         controller = new AbortController();
-        timeout = setTimeout(() => controller.abort(), options.timeout);
+        timeout = setTimeout(() => controller!.abort(), options.timeout);
 
-        options.signal?.addEventListener('abort', () => controller.abort('abort'));
+        options.signal?.addEventListener('abort', () => controller!.abort(options.signal?.reason));
     }
 
     try {
@@ -190,9 +199,11 @@ export async function domFetch<T extends HttpFetchOptions<BodyInit>>(options: T)
             body,
         });
 
-        if (!options?.ignoreStatusCode) {
+        if (options?.checkStatusCode === undefined || options?.checkStatusCode) {
             try {
-                checkStatus(response.status);
+                const checker = typeof options?.checkStatusCode === 'function' ? options.checkStatusCode : checkStatus;
+                if (!checker(response.status))
+                    throw new Error(`http response statusCode ${response.status}`);
             }
             catch (e) {
                 response.arrayBuffer().catch(() => { });
@@ -207,35 +218,6 @@ export async function domFetch<T extends HttpFetchOptions<BodyInit>>(options: T)
         };
     }
     finally {
-        clearTimeout(timeout);
+        clearTimeout(timeout!);
     }
-}
-
-function ensureType<T>(v: T) {
-}
-
-async function test() {
-    const a = await domFetch({
-        url: 'http://example.com',
-    });
-
-    ensureType<Buffer>(a.body);
-
-    const b = await domFetch({
-        url: 'http://example.com',
-        responseType: 'json',
-    });
-    ensureType<any>(b.body);
-
-    const c = await domFetch({
-        url: 'http://example.com',
-        responseType: 'readable',
-    });
-    ensureType<Response>(c.body);
-
-    const d = await domFetch({
-        url: 'http://example.com',
-        responseType: 'buffer',
-    });
-    ensureType<Buffer>(d.body);
 }

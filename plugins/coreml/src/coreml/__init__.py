@@ -31,6 +31,8 @@ availableModels = [
     "scrypted_yolo_nas_s_320",
     "scrypted_yolov9e_320",
     "scrypted_yolov9c_320",
+    "scrypted_yolov9s_320",
+    "scrypted_yolov9t_320",
     "scrypted_yolov6n_320",
     "scrypted_yolov6s_320",
     "scrypted_yolov8n_320",
@@ -81,8 +83,9 @@ class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProv
         self.scrypted_yolo_nas = "scrypted_yolo_nas" in model
         self.scrypted_yolo = "scrypted_yolo" in model
         self.scrypted_model = "scrypted" in model
-        model_version = "v7"
+        model_version = "v8"
         mlmodel = "model" if self.scrypted_yolo else model
+        self.modelName = model
 
         print(f"model: {model}")
 
@@ -247,13 +250,13 @@ class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProv
 
             for r in objects:
                 obj = Prediction(
-                    r["classId"].astype(float),
-                    r["confidence"].astype(float),
+                    r["classId"],
+                    r["confidence"],
                     Rectangle(
-                        r["xmin"].astype(float),
-                        r["ymin"].astype(float),
-                        r["xmax"].astype(float),
-                        r["ymax"].astype(float),
+                        r["xmin"],
+                        r["ymin"],
+                        r["xmax"],
+                        r["ymax"],
                     ),
                 )
                 objs.append(obj)
@@ -272,9 +275,9 @@ class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProv
             ),
         )
 
-        coordinatesList = out_dict["coordinates"].astype(float)
+        coordinatesList = out_dict["coordinates"]
 
-        for index, confidenceList in enumerate(out_dict["confidence"].astype(float)):
+        for index, confidenceList in enumerate(out_dict["confidence"]):
             values = confidenceList
             maxConfidenceIndex = max(range(len(values)), key=values.__getitem__)
             maxConfidence = confidenceList[maxConfidenceIndex]

@@ -22,6 +22,7 @@ async def maybe_await(value):
 
 
 class RPCResultError(Exception):
+    # i think this stuff shouldn't be here...
     name: str
     stack: str
     message: str
@@ -126,7 +127,7 @@ class RpcPeer:
         self.pendingResults: Mapping[str, Future] = {}
         self.remoteWeakProxies: Mapping[str, any] = {}
         self.nameDeserializerMap: Mapping[str, RpcSerializer] = {}
-        self.onProxySerialization: Callable[[Any, str], Any] = None
+        self.onProxySerialization: Callable[[Any, str], tuple[str, Any]] = None
         self.killed = False
         self.tags = {}
 
@@ -187,14 +188,7 @@ class RpcPeer:
         s = self.serializeError(e)
         result['result'] = s
         result['throw'] = True
-
-        # TODO 3/2/2023 deprecate these properties
-        tb = traceback.format_exc()
-        message = str(e)
-        result['stack'] = tb or '[no stack]',
-        result['message'] = message or '[no message]',
-        # END TODO
-
+        return result
 
     def deserializeError(e: Dict) -> RPCResultError:
         error = RPCResultError(None, e.get('message'))
@@ -274,12 +268,21 @@ class RpcPeer:
 
         proxiedEntry = self.localProxied.get(value, None)
         if proxiedEntry:
-            proxiedEntry['finalizerId'] = self.generateId()
+            if self.onProxySerialization:
+                proxyId, __remote_proxy_props = self.onProxySerialization(value)
+            else:
+                __remote_proxy_props = RpcPeer.prepareProxyProperties(value)
+                proxyId = proxiedEntry['id']
+
+            if proxyId != proxiedEntry['id']:
+                raise Exception('onProxySerialization proxy id mismatch')
+
+            proxiedEntry['finalizerId'] = RpcPeer.generateId()
             ret = {
-                '__remote_proxy_id': proxiedEntry['id'],
+                '__remote_proxy_id': proxyId,
                 '__remote_proxy_finalizer_id': proxiedEntry['finalizerId'],
                 '__remote_constructor_name': __remote_constructor_name,
-                '__remote_proxy_props': RpcPeer.prepareProxyProperties(value),
+                '__remote_proxy_props': __remote_proxy_props,
                 '__remote_proxy_oneway_methods': getattr(value, '__proxy_oneway_methods', None),
             }
             return ret
@@ -292,18 +295,18 @@ class RpcPeer:
             }
             return ret
 
-        proxyId = self.generateId()
+        if self.onProxySerialization:
+            proxyId, __remote_proxy_props = self.onProxySerialization(value)
+        else:
+            __remote_proxy_props = RpcPeer.prepareProxyProperties(value)
+            proxyId = RpcPeer.generateId()
+
         proxiedEntry = {
             'id': proxyId,
             'finalizerId': proxyId,
         }
         self.localProxied[value] = proxiedEntry
         self.localProxyMap[proxyId] = value
-
-        if self.onProxySerialization:
-            __remote_proxy_props = self.onProxySerialization(value, proxyId)
-        else:
-            __remote_proxy_props = RpcPeer.prepareProxyProperties(value)
 
         ret = {
             '__remote_proxy_id': proxyId,
@@ -390,6 +393,9 @@ class RpcPeer:
 
         return value
 
+    def sendResult(self, result: Dict, serializationContext: Dict):
+        self.send(result, lambda e: self.send(self.createErrorResult(result, e, None), None), serializationContext)
+
     async def handleMessage(self, message: Dict, deserializationContext: Dict):
         try:
             messageType = message['type']
@@ -409,7 +415,7 @@ class RpcPeer:
                     self.createErrorResult(
                         result, type(e).__name, str(e), tb)
 
-                self.send(result, None, serializationContext)
+                self.sendResult(result, serializationContext)
 
             elif messageType == 'apply':
                 result = {
@@ -450,7 +456,7 @@ class RpcPeer:
                     self.createErrorResult(result, e)
 
                 if not message.get('oneway', False):
-                    self.send(result, None, serializationContext)
+                    self.sendResult(result, serializationContext)
 
             elif messageType == 'result':
                 id = message['id']
@@ -459,13 +465,6 @@ class RpcPeer:
                     raise RPCResultError(
                         None, 'unknown result %s' % id)
                 del self.pendingResults[id]
-                if (hasattr(message, 'message') or hasattr(message, 'stack')) and not hasattr(message, 'throw'):
-                    e = RPCResultError(
-                        None, message.get('message', None))
-                    e.stack = message.get('stack', None)
-                    e.name = message.get('name', None)
-                    future.set_exception(e)
-                    return
                 deserialized = self.deserialize(message.get('result', None), deserializationContext)
                 if message.get('throw'):
                     future.set_exception(deserialized)
@@ -491,7 +490,7 @@ class RpcPeer:
 
     randomDigits = string.ascii_uppercase + string.ascii_lowercase + string.digits
 
-    def generateId(self):
+    def generateId():
         return ''.join(random.choices(RpcPeer.randomDigits, k=8))
 
     async def createPendingResult(self, cb: Callable[[str, Callable[[Exception], None]], None]):
@@ -500,7 +499,7 @@ class RpcPeer:
             future.set_exception(RPCResultError(None, 'RpcPeer has been killed (createPendingResult)'))
             return future
 
-        id = self.generateId()
+        id = RpcPeer.generateId()
         self.pendingResults[id] = future
         await cb(id, lambda e: future.set_exception(RPCResultError(e, None)))
         return await future

@@ -32,10 +32,7 @@ import { PluginHost, UnsupportedRuntimeError } from './plugin/plugin-host';
 import { isConnectionUpgrade, PluginHttp } from './plugin/plugin-http';
 import { WebSocketConnection } from './plugin/plugin-remote-websocket';
 import { getPluginVolume } from './plugin/plugin-volume';
-import { CustomRuntimeWorker } from './plugin/runtime/custom-worker';
-import { NodeForkWorker } from './plugin/runtime/node-fork-worker';
-import { PythonRuntimeWorker } from './plugin/runtime/python-worker';
-import { RuntimeWorker, RuntimeWorkerOptions } from './plugin/runtime/runtime-worker';
+import { getBuiltinRuntimeHosts } from './plugin/runtime/runtime-host';
 import { getIpAddress, SCRYPTED_INSECURE_PORT, SCRYPTED_SECURE_PORT } from './server-settings';
 import { AddressSettings } from './services/addresses';
 import { Alerts } from './services/alerts';
@@ -59,8 +56,6 @@ interface HttpPluginData {
     pluginHost: PluginHost;
     pluginDevice: PluginDevice
 }
-
-export type RuntimeHost = (mainFilename: string, pluginId: string, options: RuntimeWorkerOptions, runtime: ScryptedRuntime) => RuntimeWorker;
 
 export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
     clusterId = crypto.randomBytes(3).toString('hex');
@@ -92,16 +87,12 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
     usersService = new UsersService(this);
     info = new Info();
     backup = new Backup(this);
-    pluginHosts = new Map<string, RuntimeHost>();
+    pluginHosts = getBuiltinRuntimeHosts();
 
     constructor(public mainFilename: string, public datastore: Level, insecure: http.Server, secure: https.Server, app: express.Application) {
         super(app);
         // ensure that all the users are loaded from the db.
         this.usersService.getAllUsers();
-
-        this.pluginHosts.set('custom', (_, pluginId, options, runtime) => new CustomRuntimeWorker(pluginId, options, runtime));
-        this.pluginHosts.set('python', (_, pluginId, options) => new PythonRuntimeWorker(pluginId, options));
-        this.pluginHosts.set('node', (mainFilename, pluginId, options) => new NodeForkWorker(mainFilename, pluginId, options));
 
         app.disable('x-powered-by');
 
@@ -275,10 +266,11 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
             return;
         }
 
+        const reqany = req as any;
         if ((req as any).upgradeHead)
-            this.connectRPCObjectIO.handleUpgrade(req, res.socket, (req as any).upgradeHead)
+            this.connectRPCObjectIO.handleUpgrade(reqany, res.socket, reqany.upgradeHead)
         else
-            this.connectRPCObjectIO.handleRequest(req, res);
+            this.connectRPCObjectIO.handleRequest(reqany, res);
     }
 
     async getEndpointPluginData(req: Request, endpoint: string, isUpgrade: boolean, isEngineIOEndpoint: boolean): Promise<HttpPluginData> {
@@ -422,15 +414,18 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
             return;
         }
 
-        (req as any).scrypted = {
+        const reqany = req as any;
+
+        reqany.scrypted = {
             endpointRequest,
             pluginDevice,
             accessControls,
         };
+
         if ((req as any).upgradeHead)
-            pluginHost.io.handleUpgrade(req, res.socket, (req as any).upgradeHead)
+            pluginHost.io.handleUpgrade(reqany, res.socket, reqany.upgradeHead)
         else
-            pluginHost.io.handleRequest(req, res);
+            pluginHost.io.handleRequest(reqany, res);
     }
 
     handleRequestEndpoint(req: Request, res: Response, endpointRequest: HttpRequest, pluginData: HttpPluginData) {
@@ -463,6 +458,7 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
             delete this.plugins[pluginId];
             existing.kill();
         }
+        this.invalidatePluginMixins(pluginId);
     }
 
     // should this be async?
@@ -481,6 +477,11 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
             return;
         proxyPair.handler.rebuildMixinTable();
         return proxyPair;
+    }
+
+    invalidatePluginMixins(pluginId: string) {
+        const deviceIds = new Set<string>(Object.values(this.pluginDevices).filter(d => d.pluginId === pluginId).map(d => d._id));
+        this.invalidateMixins(deviceIds);
     }
 
     invalidateMixins(ids: Set<string>) {
@@ -739,7 +740,7 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
         return pluginHost;
     }
 
-    findPluginDevice?(pluginId: string, nativeId?: ScryptedNativeId): PluginDevice {
+    findPluginDevice(pluginId: string, nativeId?: ScryptedNativeId): PluginDevice {
         // JSON stringify over rpc turns undefined into null.
         if (nativeId === null)
             nativeId = undefined;

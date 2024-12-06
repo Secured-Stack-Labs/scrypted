@@ -83,17 +83,17 @@ export async function httpFetch<T extends HttpFetchOptions<Readable>>(options: T
         body = newBody;
     }
 
-    let controller: AbortController;
+    let controller: AbortController | undefined;
     let timeout: NodeJS.Timeout;
     if (options.timeout) {
         controller = new AbortController();
-        timeout = setTimeout(() => controller.abort(), options.timeout);
+        timeout = setTimeout(() => controller!.abort(), options.timeout);
 
-        options.signal?.addEventListener('abort', () => controller.abort('abort'));
+        options.signal?.addEventListener('abort', () => controller!.abort(options.signal?.reason));
     }
 
     const signal = controller?.signal || options.signal;
-    signal?.addEventListener('abort', () => request.destroy(new Error('abort')));
+    signal?.addEventListener('abort', () => request.destroy(new Error(options.signal?.reason || 'abort')));
 
     const nodeHeaders: Record<string, string[]> = {};
     for (const [k, v] of headers) {
@@ -122,9 +122,12 @@ export async function httpFetch<T extends HttpFetchOptions<Readable>>(options: T
     try {
         const [response] = await once(request, 'response') as [IncomingMessage];
 
-        if (!options?.ignoreStatusCode) {
+
+        if (options?.checkStatusCode === undefined || options?.checkStatusCode) {
             try {
-                checkStatus(response.statusCode);
+                const checker = typeof options?.checkStatusCode === 'function' ? options.checkStatusCode : checkStatus;
+                if (!response.statusCode || !checker(response.statusCode))
+                    throw new Error(`http response statusCode ${response.statusCode}`);
             }
             catch (e) {
                 readMessageBuffer(response).catch(() => { });
@@ -134,47 +137,19 @@ export async function httpFetch<T extends HttpFetchOptions<Readable>>(options: T
 
         const incomingHeaders = new Headers();
         for (const [k, v] of Object.entries(response.headers)) {
-            for (const vv of (typeof v === 'string' ? [v] : v)) {
+            for (const vv of (typeof v === 'string' ? [v] : v!)) {
                 incomingHeaders.append(k, vv)
             }
         }
 
         return {
-            statusCode: response.statusCode,
+            statusCode: response.statusCode!,
             headers: incomingHeaders,
             body: await httpFetchParseIncomingMessage(response, options.responseType),
         };
     }
     finally {
-        clearTimeout(timeout);
+        clearTimeout(timeout!);
     }
 }
 
-function ensureType<T>(v: T) {
-}
-
-async function test() {
-    const a = await httpFetch({
-        url: 'http://example.com',
-    });
-
-    ensureType<Buffer>(a.body);
-
-    const b = await httpFetch({
-        url: 'http://example.com',
-        responseType: 'json',
-    });
-    ensureType<any>(b.body);
-
-    const c = await httpFetch({
-        url: 'http://example.com',
-        responseType: 'readable',
-    });
-    ensureType<IncomingMessage>(c.body);
-
-    const d = await httpFetch({
-        url: 'http://example.com',
-        responseType: 'buffer',
-    });
-    ensureType<Buffer>(d.body);
-}

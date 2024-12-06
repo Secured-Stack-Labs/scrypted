@@ -5,27 +5,22 @@ import { CameraBase, CameraProviderBase, UrlMediaStreamOptions } from "../../ffm
 
 export { UrlMediaStreamOptions } from "../../ffmpeg-camera/src/common";
 
-const { mediaManager } = sdk;
+export function createRtspMediaStreamOptions(url: string, index: number): UrlMediaStreamOptions {
+    return {
+        id: `channel${index}`,
+        name: `Stream ${index + 1}`,
+        url,
+        container: 'rtsp',
+        video: {
+        },
+        audio: {
 
+        },
+    };
+}
 export class RtspCamera extends CameraBase<UrlMediaStreamOptions> {
     takePicture(option?: PictureOptions): Promise<MediaObject> {
         throw new Error("The RTSP Camera does not provide snapshots. Install the Snapshot Plugin if snapshots are available via an URL.");
-    }
-
-    createRtspMediaStreamOptions(url: string, index: number): UrlMediaStreamOptions {
-        return {
-            id: `channel${index}`,
-            name: `Stream ${index + 1}`,
-            url,
-            container: 'rtsp',
-            video: {
-            },
-            audio: this.isAudioDisabled() ? null : {},
-        };
-    }
-
-    getChannelFromMediaStreamOptionsId(id: string) {
-        return id.substring('channel'.length);
     }
 
     getRawVideoStreamOptions(): UrlMediaStreamOptions[] {
@@ -43,7 +38,7 @@ export class RtspCamera extends CameraBase<UrlMediaStreamOptions> {
         }
 
         // filter out empty strings.
-        const ret = urls.filter(url => !!url).map((url, index) => this.createRtspMediaStreamOptions(url, index));
+        const ret = urls.filter(url => !!url).map((url, index) => createRtspMediaStreamOptions(url, index));
 
         if (!ret.length)
             return;
@@ -136,6 +131,7 @@ export class RtspCamera extends CameraBase<UrlMediaStreamOptions> {
 
     async putRtspUrls(urls: string[]) {
         this.storage.setItem('urls', JSON.stringify(urls.filter(url => !!url)));
+        this.onDeviceEvent(ScryptedInterface.Settings, undefined);
     }
 
     async putSettingBase(key: string, value: SettingValue) {
@@ -231,7 +227,7 @@ export abstract class RtspSmartCamera extends RtspCamera {
 
     async putSetting(key: string, value: SettingValue) {
         this.putSettingBase(key, value);
-        this.listener.then(l => l.emit('error', new Error("new settings")));
+        this.listener?.then(l => l.emit('error', new Error("new settings")));
     }
 
     async takePicture(options?: RequestPictureOptions) {
@@ -375,7 +371,7 @@ export abstract class RtspSmartCamera extends RtspCamera {
     }
 }
 
-export class RtspProvider extends CameraProviderBase<UrlMediaStreamOptions> {
+export abstract class RtspProvider extends CameraProviderBase<UrlMediaStreamOptions> {
     createCamera(nativeId: string): RtspCamera {
         return new RtspCamera(nativeId, this);
     }

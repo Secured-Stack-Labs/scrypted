@@ -57,9 +57,9 @@ export type ScryptedClientConnectionType = 'http' | 'webrtc' | 'http-direct';
 export interface ScryptedClientStatic extends ScryptedStatic {
     userId?: string;
     username?: string;
+    admin: boolean;
     disconnect(): void;
     onClose?: Function;
-    version: string;
     rtcConnectionManagement?: RTCConnectionManagement;
     browserSignalingSession?: BrowserSignalingSession;
     address?: string;
@@ -163,11 +163,13 @@ export async function loginScryptedClient(options: ScryptedLoginOptions) {
         token: body.token as string,
         addresses: body.addresses as string[],
         externalAddresses: body.externalAddresses as string[],
+        hostname: body.hostname,
         // the cloud plugin will include this header.
         // should maybe move this into the cloud server itself.
         scryptedCloud: response.headers.get('x-scrypted-cloud') === 'true',
         directAddress: response.headers.get('x-scrypted-direct-address'),
         cloudAddress: response.headers.get('x-scrypted-cloud-address'),
+        serverId: response.headers.get('x-scrypted-server-id'),
     };
 }
 
@@ -212,6 +214,7 @@ export async function checkScryptedClientLogin(options?: ScryptedConnectionOptio
         scryptedCloud: response.headers.get('x-scrypted-cloud') === 'true',
         directAddress: response.headers.get('x-scrypted-direct-address'),
         cloudAddress: response.headers.get('x-scrypted-cloud-address'),
+        serverId: response.headers.get('x-scrypted-server-id'),
     };
 }
 
@@ -225,6 +228,8 @@ export interface ScryptedClientLoginResult {
     scryptedCloud: boolean;
     directAddress: string;
     cloudAddress: string;
+    hostname: string;
+    serverId: string;
 }
 
 export class ScryptedClientLoginError extends Error {
@@ -270,7 +275,9 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
     let scryptedCloud: boolean;
     let directAddress: string;
     let cloudAddress: string;
+    let hostname: string;
     let token: string;
+    let serverId: string;
 
     console.log('@scrypted/client', packageJson.version);
 
@@ -295,6 +302,8 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
         authorization = loginResult.authorization;
         queryToken = loginResult.queryToken;
         token = loginResult.token;
+        hostname = loginResult.hostname;
+        serverId = loginResult.serverId;
         console.log('login result', Date.now() - start, loginResult);
     }
     else {
@@ -367,6 +376,8 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
         authorization = loginCheck.authorization;
         queryToken = loginCheck.queryToken;
         token = loginCheck.token;
+        hostname = loginCheck.hostname;
+        serverId = loginCheck.serverId;
         console.log('login checked', Date.now() - start, loginCheck);
     }
 
@@ -518,7 +529,7 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
                     serializer.sendMessage(message, reject, serializationContext);
                 }
                 catch (e) {
-                    reject?.(e);
+                    reject?.(e as Error);
                 }
             });
 
@@ -532,9 +543,10 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
             });
             serializer.setupRpcPeer(upgradingPeer);
 
-            const readyClose = new Promise<RpcPeer>((resolve, reject) => {
-                check.on('close', () => reject(new Error('closed')))
-            })
+            // is this an issue?
+            // const readyClose = new Promise<RpcPeer>((resolve, reject) => {
+            //     check.on('close', () => reject(new Error('closed')))
+            // })
 
             upgradingPeer.params['session'] = session;
 
@@ -565,7 +577,7 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
                     dcSerializer.sendMessage(message, reject, serializationContext);
                 }
                 catch (e) {
-                    reject?.(e);
+                    reject?.(e as Error);
                     pc.close();
                 }
             });
@@ -666,7 +678,7 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
                     serializer.sendMessage(message, reject, serializationContext);
                 }
                 catch (e) {
-                    reject?.(e);
+                    reject?.(e as Error);
                 }
             });
             socket.on('message', data => {
@@ -708,16 +720,16 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
             });
         }
 
-        const [version, rtcConnectionManagement] = await Promise.all([
+        const [admin, rtcConnectionManagement] = await Promise.all([
             (async () => {
-                let version = 'unknown';
                 try {
+                    // info is 
                     const info = await systemManager.getComponent('info');
-                    version = await info.getVersion();
+                    return !!info;
                 }
                 catch (e) {
                 }
-                return version;
+                return false;
             })(),
             (async () => {
                 let rtcConnectionManagement: RTCConnectionManagement;
@@ -734,7 +746,6 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
         ]);
 
         console.log('api initialized', Date.now() - start);
-        console.log('api queried, version:', version);
 
         const userDevice = Object.keys(systemManager.getSystemState())
             .map(id => systemManager.getDeviceById(id))
@@ -781,7 +792,7 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
                                 serializer.sendMessage(message, reject, serializationContext);
                             }
                             catch (e) {
-                                reject?.(e);
+                                reject?.(e as Error);
                             }
                         });
                         serializer.setupRpcPeer(clusterPeer);
@@ -846,7 +857,7 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
             pluginRemoteAPI: undefined,
             address,
             connectionType,
-            version,
+            admin,
             systemManager,
             deviceManager,
             endpointManager,
@@ -868,6 +879,8 @@ export async function connectScryptedClient(options: ScryptedClientOptions): Pro
                 queryToken,
                 authorization,
                 cloudAddress,
+                hostname,
+                serverId,
             },
             connectRPCObject,
             fork: undefined,

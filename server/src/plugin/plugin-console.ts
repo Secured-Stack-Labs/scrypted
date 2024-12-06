@@ -295,8 +295,8 @@ export async function createConsoleServer(remoteStdout: Readable, remoteStderr: 
         socket.once('error', cleanup);
         socket.once('end', cleanup);
     });
-    const readPort = await listenZero(readServer);
-    const writePort = await listenZero(writeServer);
+    const readPort = await listenZero(readServer, '127.0.0.1');
+    const writePort = await listenZero(writeServer, '127.0.0.1');
 
     return {
         clear(nativeId: ScryptedNativeId) {
@@ -323,4 +323,13 @@ export async function createConsoleServer(remoteStdout: Readable, remoteStderr: 
         readPort,
         writePort,
     };
+}
+
+export function pipeWorkerConsole(nativeWorker: { stdout: Readable, stderr: Readable }, useConsole = console) {
+    nativeWorker.stdout.on('data', (data) => {
+        useConsole.log(data.toString());
+    });
+    nativeWorker.stderr.on('data', (data) => {
+        useConsole.error(data.toString());
+    });
 }

@@ -7,7 +7,6 @@ import fs from 'fs';
 import http from 'http';
 import httpAuth from 'http-auth';
 import https from 'https';
-import ip, { isV4Format } from 'ip';
 import net from 'net';
 import os from 'os';
 import path from 'path';
@@ -16,12 +15,13 @@ import semver from 'semver';
 import { install as installSourceMapSupport } from 'source-map-support';
 import { createSelfSignedCertificate, CURRENT_SELF_SIGNED_CERTIFICATE_VERSION } from './cert';
 import { Plugin, ScryptedUser, Settings } from './db-types';
+import { getUsableNetworkAddresses } from './ip';
 import Level from './level';
 import { PluginError } from './plugin/plugin-error';
 import { getScryptedVolume } from './plugin/plugin-volume';
 import { RPCResultError } from './rpc';
 import { ScryptedRuntime } from './runtime';
-import { getHostAddresses, SCRYPTED_DEBUG_PORT, SCRYPTED_INSECURE_PORT, SCRYPTED_SECURE_PORT } from './server-settings';
+import { SCRYPTED_DEBUG_PORT, SCRYPTED_INSECURE_PORT, SCRYPTED_SECURE_PORT } from './server-settings';
 import { getNpmPackageInfo } from './services/plugin';
 import { setScryptedUserPassword, UsersService } from './services/users';
 import { sleep } from './sleep';
@@ -108,7 +108,7 @@ app.use(bodyParser.urlencoded({ extended: false }) as any)
 app.use(bodyParser.json())
 
 // parse some custom thing into a Buffer
-app.use(bodyParser.raw({ type: 'application/zip', limit: 100000000 }) as any)
+app.use(bodyParser.raw({ type: 'application/*', limit: 100000000 }) as any)
 
 async function start(mainFilename: string, options?: {
     onRuntimeCreated?: (runtime: ScryptedRuntime) => Promise<void>,
@@ -160,6 +160,16 @@ async function start(mainFilename: string, options?: {
 
         callback(sha === user.passwordHash || password === user.token);
     });
+
+    // the default http-auth will returns a WWW-Authenticate header if login fails.
+    // this causes the Safari to prompt for login.
+    // https://github.com/gevorg/http-auth/blob/4158fa75f58de70fd44aa68876a8674725e0556e/src/auth/base.js#L81
+    // override the ask function to return a bare 401 instead.
+    // @ts-expect-error
+    basicAuth.ask = (res) => {
+        res.statusCode = 401;
+        res.end();
+    };
 
     const httpsServerOptions = process.env.SCRYPTED_HTTPS_OPTIONS_FILE
         ? JSON.parse(fs.readFileSync(process.env.SCRYPTED_HTTPS_OPTIONS_FILE).toString())
@@ -310,12 +320,26 @@ async function start(mainFilename: string, options?: {
         next();
     });
 
-    // allow basic auth to deploy plugins
+    // all methods under /web/component require admin auth.
     app.all('/web/component/*', (req, res, next) => {
+        // check if the user is admin authed already, and if not, continue on with basic auth to escalate.
+        // this will cover anonymous access like in demo site.
+        if (res.locals.username && !res.locals.aclId) {
+            next();
+            return;
+        }
+
         if (req.protocol === 'https' && req.headers.authorization && req.headers.authorization.toLowerCase()?.indexOf('basic') !== -1) {
-            const basicChecker = basicAuth.check((req) => {
-                res.locals.username = req.user;
-                (req as any).username = req.user;
+            const basicChecker = basicAuth.check(async (req) => {
+                try {
+                    const user = await db.tryGet(ScryptedUser, req.user);
+                    res.locals.username = user._id;
+                    res.locals.aclId = user.aclId;
+                }
+                catch (e) {
+                    // should be unreachable.
+                    console.warn('basic auth failed unexpectedly', e);
+                }
                 next();
             });
 
@@ -324,7 +348,7 @@ async function start(mainFilename: string, options?: {
             return;
         }
         next();
-    })
+    });
 
     // verify all plugin related requests have admin auth
     app.all('/web/component/*', (req, res, next) => {
@@ -450,6 +474,8 @@ async function start(mainFilename: string, options?: {
             debugServer.on('connection', resolve);
         });
 
+        waitDebug.catch(() => {});
+
         workerInspectPort = Math.round(Math.random() * 10000) + 30000;
         try {
             await scrypted.installPlugin(plugin, {
@@ -508,9 +534,9 @@ async function start(mainFilename: string, options?: {
     });
 
     const getAlternateAddresses = async () => {
-        const addresses = ((await scrypted.addressSettings.getLocalAddresses()) || getHostAddresses(true, true))
+        const addresses = ((await scrypted.addressSettings.getLocalAddresses()) || getUsableNetworkAddresses())
             .map(address => {
-                if (ip.isV6Format(address) && !isV4Format(address))
+                if (net.isIPv6(address) && !net.isIPv4(address))
                     address = `[${address}]`;
                 return `https://${address}:${SCRYPTED_SECURE_PORT}`
             });
@@ -714,7 +740,7 @@ async function start(mainFilename: string, options?: {
     console.log('#######################################################');
     console.log(`Scrypted Volume           : ${volumeDir}`);
     console.log(`Scrypted Server (Local)   : https://localhost:${SCRYPTED_SECURE_PORT}/`);
-    for (const address of getHostAddresses(true, true)) {
+    for (const address of getUsableNetworkAddresses()) {
         console.log(`Scrypted Server (Remote)  : https://${address}:${SCRYPTED_SECURE_PORT}/`);
     }
     console.log(`Version:       : ${await scrypted.info.getVersion()}`);

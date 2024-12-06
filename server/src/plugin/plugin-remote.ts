@@ -179,7 +179,6 @@ class DeviceStateProxyHandler implements ProxyHandler<any> {
 
     set?(target: any, p: PropertyKey, value: any, receiver: any) {
         checkProperty(p.toString(), value);
-        const now = Date.now();
         this.deviceManager.systemManager.state[this.id][p as string] = {
             value,
         };
@@ -446,7 +445,7 @@ export async function setupPluginRemote(peer: RpcPeer, api: PluginAPI, pluginId:
         return remote;
     }
     catch (e) {
-        throw new RPCResultError(peer, 'error while retrieving PluginRemote', e);
+        throw new RPCResultError(peer, 'error while retrieving PluginRemote', e as Error);
     }
 }
 
@@ -462,7 +461,7 @@ export interface PluginRemoteAttachOptions {
     getPluginConsole?: () => Console;
     getMixinConsole?: (id: string, nativeId?: ScryptedNativeId) => Console;
     onLoadZip?: (scrypted: ScryptedStatic, params: any, packageJson: any, getZip: () => Promise<Buffer>, zipOptions: PluginRemoteLoadZipOptions) => Promise<any>;
-    onGetRemote?: (api: PluginAPI, pluginId: string) => Promise<void>;
+    onGetRemote?: (api: PluginAPI, pluginId: string) => Promise<PluginAPI>;
 }
 
 export function attachPluginRemote(peer: RpcPeer, options?: PluginRemoteAttachOptions): Promise<ScryptedStatic> {
@@ -496,7 +495,7 @@ export function attachPluginRemote(peer: RpcPeer, options?: PluginRemoteAttachOp
             }
         });
 
-        await options?.onGetRemote?.(api, pluginId);
+        api = await options?.onGetRemote?.(api, pluginId) || api;
 
         const systemManager = new SystemManagerImpl();
         const deviceManager = new DeviceManagerImpl(systemManager, getDeviceConsole, getMixinConsole);

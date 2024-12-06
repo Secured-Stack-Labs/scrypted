@@ -35,6 +35,8 @@ availableModels = [
     "scrypted_yolov6n_320",
     "scrypted_yolov6s_320",
     "scrypted_yolov9c_320",
+    "scrypted_yolov9s_320",
+    "scrypted_yolov9t_320",
     "scrypted_yolov8n_320",
 ]
 
@@ -55,18 +57,19 @@ class ONNXPlugin(
         if model == "Default" or model not in availableModels:
             if model != "Default":
                 self.storage.setItem("model", "Default")
-            model = "scrypted_yolov10m_320"
+            model = "scrypted_yolov9c_320"
         self.yolo = "yolo" in model
         self.scrypted_yolov10 = "scrypted_yolov10" in model
         self.scrypted_yolo_nas = "scrypted_yolo_nas" in model
         self.scrypted_yolo = "scrypted_yolo" in model
         self.scrypted_model = "scrypted" in model
+        self.modelName = model
 
         print(f"model {model}")
 
         onnxmodel = model if self.scrypted_yolo_nas else "best" if self.scrypted_model else model
 
-        model_version = "v2"
+        model_version = "v3"
         onnxfile = self.downloadFile(
             f"https://github.com/koush/onnx-models/raw/main/{model}/{onnxmodel}.onnx",
             f"{model_version}/{model}/{onnxmodel}.onnx",
@@ -80,8 +83,9 @@ class ONNXPlugin(
             deviceIds = ["0"]
         self.deviceIds = deviceIds
 
-        compiled_models = []
-        self.compiled_models = {}
+        compiled_models: list[onnxruntime.InferenceSession] = []
+        self.compiled_models: dict[str, onnxruntime.InferenceSession] = {}
+        self.provider = "Unknown"
 
         try:
             for deviceId in deviceIds:
@@ -91,7 +95,7 @@ class ONNXPlugin(
                 if sys.platform == 'darwin':
                     providers.append("CoreMLExecutionProvider")
 
-                if ('linux' in sys.platform or 'win' in sys.platform) and platform.machine() == 'x86_64':
+                if ('linux' in sys.platform or 'win' in sys.platform) and (platform.machine() == 'x86_64' or platform.machine() == 'AMD64'):
                     deviceId = int(deviceId)
                     providers.append(("CUDAExecutionProvider", { "device_id": deviceId }))
 
@@ -118,6 +122,14 @@ class ONNXPlugin(
             thread_name = threading.current_thread().name
             interpreter = compiled_models.pop()
             self.compiled_models[thread_name] = interpreter
+            # remove CPUExecutionProider from providers
+            providers = interpreter.get_providers()
+            if not len(providers):
+                providers = ["CPUExecutionProvider"]
+            if "CPUExecutionProvider" in providers:
+                providers.remove("CPUExecutionProvider")
+            # join the remaining providers string
+            self.provider = ", ".join(providers)
             print('Runtime initialized on thread {}'.format(thread_name))
 
         self.executor = concurrent.futures.ThreadPoolExecutor(
@@ -130,6 +142,8 @@ class ONNXPlugin(
             max_workers=len(compiled_models),
             thread_name_prefix="onnx-prepare",
         )
+
+        self.executor.submit(lambda: None)
 
         self.faceDevice = None
         self.textDevice = None
@@ -203,7 +217,7 @@ class ONNXPlugin(
                 "key": "execution_device",
                 "title": "Execution Device",
                 "readonly": True,
-                "value": onnxruntime.get_device(),
+                "value": self.provider,
             }
         ]
 
