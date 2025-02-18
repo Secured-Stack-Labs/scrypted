@@ -103,7 +103,7 @@ jobs:
         category: "/language:${{matrix.language}}"
 
     - name: Save Sarif Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-	name: CodeQL-sarif
-	path: ../results
+      	name: codeql.sarif
+        path: ../results
