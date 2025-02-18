@@ -105,5 +105,5 @@ jobs:
     - name: Save Sarif Artifact
       uses: actions/upload-artifact@v3
       with:
-	name: CodeQLSARIF
-	path: ${{matrix.language.sarif-output}}
+	name: CodeQL-sarif
+	path: ../results
