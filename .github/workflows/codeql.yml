@@ -105,4 +105,4 @@ jobs:
     - name: Save Sarif Artifact
       uses: actions/upload-artifact@v4
       with:
-        path: ../results
+        path: /results/${{matrix.language}}.sarif
