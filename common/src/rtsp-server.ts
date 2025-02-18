@@ -247,6 +247,8 @@ export function createRtspParser(options?: StreamParserOptions): RtspStreamParse
             'tcp',
             ...(options?.vcodec || []),
             ...(options?.acodec || []),
+            // linux and windows seem to support 64000 but darwin is 32000?
+            '-pkt_size', '32000',
             '-f', 'rtsp',
         ],
         findSyncFrame(streamChunks: StreamChunk[]) {
@@ -394,7 +396,7 @@ export class RtspClient extends RtspBase {
     hasGetParameter = true;
     contentBase: string;
 
-    constructor(public url: string) {
+    constructor(public readonly url: string) {
         super();
         const u = new URL(url);
         const port = parseInt(u.port) || 554;
@@ -511,6 +513,42 @@ export class RtspClient extends RtspBase {
         }
     }
 
+    async *handleStream(): AsyncGenerator<{
+        rtcp: boolean,
+        header: Buffer,
+        packet: Buffer,
+        channel: number,
+    }> {
+        while (true) {
+            const header = await readLength(this.client, 4);
+            // can this even happen? since the RTSP request method isn't a fixed
+            // value like the "RTSP" in the RTSP response, I don't think so?
+            if (header[0] !== RTSP_FRAME_MAGIC) {
+                if (header.toString() !== 'RTSP')
+                    throw this.createBadHeader(header);
+
+                this.client.unshift(header);
+
+                // do what with this?
+                const message = await super.readMessage();
+                const body = await this.readBody(parseHeaders(message));
+
+                continue;
+            }
+
+            const length = header.readUInt16BE(2);
+            const packet = await readLength(this.client, length);
+            const id = header.readUInt8(1);
+
+            yield {
+                channel: id,
+                rtcp: id % 2 === 1,
+                header,
+                packet,
+            }
+        }
+    }
+
     async readLoop() {
         const deferred = new Deferred<void>();
 
@@ -613,7 +651,8 @@ export class RtspClient extends RtspBase {
         const { parseHTTPHeadersQuotedKeyValueSet } = await import('http-auth-utils/dist/utils');
 
         if (this.wwwAuthenticate.includes('Basic')) {
-            const hash = BASIC.computeHash(url);
+            const parsedUrl = new URL(this.url);
+            const hash = BASIC.computeHash({ username: parsedUrl.username, password: parsedUrl.password });
             return `Basic ${hash}`;
         }
 

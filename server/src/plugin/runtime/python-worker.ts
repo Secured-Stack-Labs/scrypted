@@ -41,12 +41,15 @@ export class PythonRuntimeWorker extends ChildProcessWorker {
         return this._stderr;
     }
 
-    constructor(pluginId: string, options: RuntimeWorkerOptions) {
-        super(pluginId, options);
+    constructor(options: RuntimeWorkerOptions) {
+        super(options);
 
         const { env, pluginDebug } = options;
         const args: string[] = [
+            // unbuffered stdout/stderr
             '-u',
+            // prevent any global packages from being used
+            // '-S',
         ];
 
         if (pluginDebug) {
@@ -100,12 +103,12 @@ export class PythonRuntimeWorker extends ChildProcessWorker {
                 cwd: options.unzippedPath,
                 // stdin, stdout, stderr, peer in, peer out
                 stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
-                env: Object.assign({
+                env: Object.assign({}, process.env, env, gstEnv, {
                     // rev this if the base python version or server characteristics change.
                     SCRYPTED_PYTHON_VERSION: '20240317',
                     PYTHONUNBUFFERED: '1',
                     PYTHONPATH,
-                }, gstEnv, process.env, env),
+                }),
             });
             this.setupWorker();
 
@@ -129,7 +132,7 @@ export class PythonRuntimeWorker extends ChildProcessWorker {
 
         const strippedPythonVersion = pluginPythonVersion.replace('.', '');
         const envPython = !process.env.SCRYPTED_PORTABLE_PYTHON && process.env[`SCRYPTED_PYTHON${strippedPythonVersion}_PATH`];
-        if (envPython) {
+        if (envPython && fs.existsSync(envPython)) {
             pythonPath = envPython;
             setup();
             this.peerin = this.worker.stdio[3] as Writable;
@@ -148,7 +151,7 @@ export class PythonRuntimeWorker extends ChildProcessWorker {
         };
 
         const pyVersion = require('py/package.json').version;
-        const pyPath = path.join(getPluginVolume(pluginId), 'py');
+        const pyPath = path.join(getPluginVolume(this.pluginId), 'py');
         const portableInstallPath = path.join(pyPath, pyVersion);
 
         const py = new PortablePython(pluginPythonVersion, portableInstallPath, portablePythonOptions);

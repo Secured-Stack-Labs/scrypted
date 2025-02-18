@@ -10,11 +10,12 @@ import { AggregateCore, AggregateCoreNativeId } from './aggregate-core';
 import { AutomationCore, AutomationCoreNativeId } from './automations-core';
 import { LauncherMixin } from './launcher-mixin';
 import { MediaCore } from './media-core';
-import { checkLxcDependencies } from './platform/lxc';
+import { checkLegacyLxc, checkLxc } from './platform/lxc';
 import { ConsoleServiceNativeId, PluginSocketService, ReplServiceNativeId } from './plugin-socket-service';
 import { ScriptCore, ScriptCoreNativeId, newScript } from './script-core';
-import { TerminalService, TerminalServiceNativeId } from './terminal-service';
+import { TerminalService, TerminalServiceNativeId, newTerminalService } from './terminal-service';
 import { UsersCore, UsersNativeId } from './user';
+import { ClusterCore, ClusterCoreNativeId } from './cluster';
 
 const { deviceManager, endpointManager } = sdk;
 
@@ -27,6 +28,7 @@ class ScryptedCore extends ScryptedDeviceBase implements HttpRequestHandler, Dev
     publicRouter: any = Router();
     mediaCore: MediaCore;
     scriptCore: ScriptCore;
+    clusterCore: ClusterCore;
     aggregateCore: AggregateCore;
     automationCore: AutomationCore;
     users: UsersCore;
@@ -96,12 +98,23 @@ class ScryptedCore extends ScryptedDeviceBase implements HttpRequestHandler, Dev
             settings: "General",
         }
 
-        checkLxcDependencies();
+        checkLegacyLxc();
+        checkLxc();
 
         this.storageSettings.settings.releaseChannel.hide = process.env.SCRYPTED_INSTALL_ENVIRONMENT !== 'lxc-docker';
 
         this.indexHtml = readFileAsString('dist/index.html');
 
+        (async () => {
+            await deviceManager.onDeviceDiscovered(
+                {
+                    name: 'Cluster',
+                    nativeId: ClusterCoreNativeId,
+                    interfaces: [ScryptedInterface.Settings, ScryptedInterface.Readme, ScryptedInterface.ScryptedSettings],
+                    type: ScryptedDeviceType.Builtin,
+                },
+            );
+        })();
         (async () => {
             await deviceManager.onDeviceDiscovered(
                 {
@@ -127,7 +140,7 @@ class ScryptedCore extends ScryptedDeviceBase implements HttpRequestHandler, Dev
                 {
                     name: 'Terminal Service',
                     nativeId: TerminalServiceNativeId,
-                    interfaces: [ScryptedInterface.StreamService, ScryptedInterface.TTY],
+                    interfaces: [ScryptedInterface.StreamService, ScryptedInterface.TTY, ScryptedInterface.ClusterForkInterface],
                     type: ScryptedDeviceType.Builtin,
                 },
             );
@@ -214,6 +227,8 @@ class ScryptedCore extends ScryptedDeviceBase implements HttpRequestHandler, Dev
     }
 
     async getDevice(nativeId: string) {
+        if (nativeId === ClusterCoreNativeId)
+            return this.clusterCore ||= new ClusterCore(ClusterCoreNativeId);
         if (nativeId === 'launcher')
             return new LauncherMixin('launcher');
         if (nativeId === 'mediacore')
@@ -227,7 +242,7 @@ class ScryptedCore extends ScryptedDeviceBase implements HttpRequestHandler, Dev
         if (nativeId === UsersNativeId)
             return this.users ||= new UsersCore();
         if (nativeId === TerminalServiceNativeId)
-            return this.terminalService ||= new TerminalService();
+            return this.terminalService ||= new TerminalService(TerminalServiceNativeId, false);
         if (nativeId === ReplServiceNativeId)
             return this.replService ||= new PluginSocketService(ReplServiceNativeId, 'repl');
         if (nativeId === ConsoleServiceNativeId)
@@ -316,5 +331,6 @@ export async function fork() {
     return {
         tsCompile,
         newScript,
+        newTerminalService,
     }
 }

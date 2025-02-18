@@ -51,8 +51,9 @@ RUN apt-get -y install \
 # allow pip to install to system
 RUN rm -f /usr/lib/python**/EXTERNALLY-MANAGED
 
-RUN python3 -m pip install --upgrade pip
-RUN python3 -m pip install debugpy typing_extensions psutil
+# ERROR: Cannot uninstall pip 24.0, RECORD file not found. Hint: The package was installed by debian.
+# RUN python3 -m pip install --upgrade pip
+RUN python3 -m pip install debugpy
 
 ################################################################
 # End section generated from template/Dockerfile.full.header
@@ -85,8 +86,8 @@ RUN add-apt-repository -y ppa:deadsnakes/ppa && \
 # allow pip to install to system
 RUN rm -f /usr/lib/python**/EXTERNALLY-MANAGED
 
-RUN python3.9 -m pip install --upgrade pip
-RUN python3.9 -m pip install debugpy typing_extensions psutil
+# RUN python3.9 -m pip install --upgrade pip
+RUN python3.9 -m pip install debugpy
 
 # Coral Edge TPU
 # https://coral.ai/docs/accelerator/get-started/#runtime-on-linux
@@ -94,16 +95,20 @@ RUN echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" |
 RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
 RUN apt-get -y update && apt-get -y install libedgetpu1-std
 
+# set default shell to bash
+RUN chsh -s /bin/bash
+ENV SHELL="/bin/bash"
+
 ENV SCRYPTED_INSTALL_ENVIRONMENT="docker"
 ENV SCRYPTED_CAN_RESTART="true"
 ENV SCRYPTED_VOLUME="/server/volume"
 ENV SCRYPTED_INSTALL_PATH="/server"
 
-RUN test -f "/usr/bin/ffmpeg" && test -f "/usr/bin/python3" && test -f "/usr/bin/python3.9" && test -f "/usr/bin/python3.10"
+RUN test -f "/usr/bin/ffmpeg" && test -f "/usr/bin/python3" && test -f "/usr/bin/python3.9" && test -f "/usr/bin/python3.12"
 ENV SCRYPTED_FFMPEG_PATH="/usr/bin/ffmpeg"
 ENV SCRYPTED_PYTHON_PATH="/usr/bin/python3"
 ENV SCRYPTED_PYTHON39_PATH="/usr/bin/python3.9"
-ENV SCRYPTED_PYTHON310_PATH="/usr/bin/python3.10"
+ENV SCRYPTED_PYTHON312_PATH="/usr/bin/python3.12"
 
 ENV SCRYPTED_DOCKER_FLAVOR="full"
 

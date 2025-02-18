@@ -183,6 +183,7 @@ class ScryptedCloud extends ScryptedDeviceBase implements OauthClient, Settings,
                     this.storageSettings.values.cloudflaredTunnelCredentials = undefined;
                 this.doCloudflaredLogin(nv);
             },
+            console: true,
         },
         cloudflaredTunnelLoginUrl: {
             group: 'Cloudflare',
@@ -1045,24 +1046,27 @@ class ScryptedCloud extends ScryptedDeviceBase implements OauthClient, Settings,
                         args['--url'] = tunnelUrl;
                     }
 
+                    // if error messages are detected after 10 minutes from tunnel attempt start,
+                    // kill the tunnel.
+                    const tenMinutesMs = 10 * 60 * 1000;
+                    const tunnelStart = Date.now();
                     const deferred = new Deferred<string>();
+
                     const cloudflareTunnel = cloudflared.tunnel(args);
+                    deferred.resolvePromise(cloudflareTunnel.url);
 
                     const processData = (string: string) => {
-                        this.console.error(string);
-
                         const lines = string.split('\n');
                         for (const line of lines) {
                             if ((line.includes('Unregistered tunnel connection')
                                 || line.includes('Connection terminated error')
                                 || line.includes('Register tunnel error')
+                                || line.includes('Failed to serve tunnel')
                                 || line.includes('Failed to get tunnel'))
-                                && deferred.finished) {
-                                this.console.warn('Cloudflare registration failed after tunnel started. The old tunnel may be invalid. Terminating.');
+                                && (deferred.finished || Date.now() - tunnelStart > tenMinutesMs)) {
+                                this.console.warn('Cloudflare registration failure detected. Terminating.');
                                 cloudflareTunnel.child.kill();
                             }
-                            if (line.includes('hostname'))
-                                this.console.log(line);
                             const match = /config=(".*?}")/gm.exec(line)
                             if (match) {
                                 const json = match[1];
@@ -1107,7 +1111,10 @@ class ScryptedCloud extends ScryptedDeviceBase implements OauthClient, Settings,
                         throw e;
                     }
                     this.console.log(`cloudflare url mapped ${this.cloudflareTunnel} to ${tunnelUrl}`);
-                    return cloudflareTunnel;
+                    return {
+                        url: deferred.promise,
+                        child: cloudflareTunnel.child,
+                    };
                 }, {
                     startingDelay: 60000,
                     timeMultiple: 1.2,

@@ -1,9 +1,9 @@
 from __future__ import annotations
 from enum import Enum
 try:
-    from typing import TypedDict
+    from typing import TypedDict, Mapping
 except:
-    from typing_extensions import TypedDict
+    from typing_extensions import TypedDict, Mapping
 from typing import Union, Any, AsyncGenerator
 
 from .other import *
@@ -71,8 +71,8 @@ class PanTiltZoomMovement(str, Enum):
 
 class ScryptedDeviceType(str, Enum):
 
-    API = "API"
     AirPurifier = "AirPurifier"
+    API = "API"
     Automation = "Automation"
     Builtin = "Builtin"
     Camera = "Camera"
@@ -117,9 +117,11 @@ class ScryptedInterface(str, Enum):
     BinarySensor = "BinarySensor"
     Brightness = "Brightness"
     BufferConverter = "BufferConverter"
-    CO2Sensor = "CO2Sensor"
+    Buttons = "Buttons"
     Camera = "Camera"
     Charger = "Charger"
+    ClusterForkInterface = "ClusterForkInterface"
+    CO2Sensor = "CO2Sensor"
     ColorSettingHsv = "ColorSettingHsv"
     ColorSettingRgb = "ColorSettingRgb"
     ColorSettingTemperature = "ColorSettingTemperature"
@@ -147,8 +149,8 @@ class ScryptedInterface(str, Enum):
     Microphone = "Microphone"
     MixinProvider = "MixinProvider"
     MotionSensor = "MotionSensor"
-    NOXSensor = "NOXSensor"
     Notifier = "Notifier"
+    NOXSensor = "NOXSensor"
     OauthClient = "OauthClient"
     ObjectDetection = "ObjectDetection"
     ObjectDetectionGenerator = "ObjectDetectionGenerator"
@@ -156,22 +158,23 @@ class ScryptedInterface(str, Enum):
     ObjectDetector = "ObjectDetector"
     ObjectTracker = "ObjectTracker"
     OccupancySensor = "OccupancySensor"
-    OnOff = "OnOff"
     Online = "Online"
-    PM10Sensor = "PM10Sensor"
-    PM25Sensor = "PM25Sensor"
+    OnOff = "OnOff"
     PanTiltZoom = "PanTiltZoom"
     PasswordStore = "PasswordStore"
     Pause = "Pause"
+    PM10Sensor = "PM10Sensor"
+    PM25Sensor = "PM25Sensor"
     PositionSensor = "PositionSensor"
     PowerSensor = "PowerSensor"
+    PressButtons = "PressButtons"
     Program = "Program"
     PushHandler = "PushHandler"
-    RTCSignalingChannel = "RTCSignalingChannel"
-    RTCSignalingClient = "RTCSignalingClient"
     Readme = "Readme"
     Reboot = "Reboot"
     Refresh = "Refresh"
+    RTCSignalingChannel = "RTCSignalingChannel"
+    RTCSignalingClient = "RTCSignalingClient"
     Scene = "Scene"
     Scriptable = "Scriptable"
     ScryptedDevice = "ScryptedDevice"
@@ -182,16 +185,17 @@ class ScryptedInterface(str, Enum):
     ScryptedSystemDevice = "ScryptedSystemDevice"
     ScryptedUser = "ScryptedUser"
     SecuritySystem = "SecuritySystem"
+    Sensors = "Sensors"
     Settings = "Settings"
+    Sleep = "Sleep"
     StartStop = "StartStop"
     StreamService = "StreamService"
-    TTY = "TTY"
-    TTYSettings = "TTYSettings"
     TamperSensor = "TamperSensor"
     TemperatureSetting = "TemperatureSetting"
     Thermometer = "Thermometer"
+    TTY = "TTY"
+    TTYSettings = "TTYSettings"
     UltravioletSensor = "UltravioletSensor"
-    VOCSensor = "VOCSensor"
     VideoCamera = "VideoCamera"
     VideoCameraConfiguration = "VideoCameraConfiguration"
     VideoCameraMask = "VideoCameraMask"
@@ -199,6 +203,8 @@ class ScryptedInterface(str, Enum):
     VideoFrameGenerator = "VideoFrameGenerator"
     VideoRecorder = "VideoRecorder"
     VideoRecorderManagement = "VideoRecorderManagement"
+    VideoTextOverlays = "VideoTextOverlays"
+    VOCSensor = "VOCSensor"
 
 class ScryptedMimeTypes(str, Enum):
 
@@ -211,11 +217,11 @@ class ScryptedMimeTypes(str, Enum):
     MediaStreamFeedback = "x-scrypted/x-media-stream-feedback"
     MediaStreamUrl = "text/x-media-url"
     PushEndpoint = "text/x-push-endpoint"
+    RequestMediaObject = "x-scrypted/x-scrypted-request-media-object"
+    RequestMediaStream = "x-scrypted/x-scrypted-request-stream"
     RTCConnectionManagement = "x-scrypted/x-scrypted-rtc-connection-management"
     RTCSignalingChannel = "x-scrypted/x-scrypted-rtc-signaling-channel"
     RTCSignalingSession = "x-scrypted/x-scrypted-rtc-signaling-session"
-    RequestMediaObject = "x-scrypted/x-scrypted-request-media-object"
-    RequestMediaStream = "x-scrypted/x-scrypted-request-stream"
     SchemePrefix = "x-scrypted/x-scrypted-scheme-"
     ServerId = "text/x-server-id"
     Url = "text/x-uri"
@@ -285,11 +291,6 @@ class ClipPath(TypedDict):
     pass
 
 
-class Point(TypedDict):
-
-    pass
-
-
 class AudioStreamOptions(TypedDict):
 
     bitrate: float
@@ -297,6 +298,13 @@ class AudioStreamOptions(TypedDict):
     encoder: str
     profile: str
     sampleRate: float
+
+class ClusterFork(TypedDict):
+
+    clusterWorkerId: str
+    id: str
+    labels: Any
+    runtime: str
 
 class HttpResponseOptions(TypedDict):
 
@@ -314,8 +322,8 @@ class ObjectDetectionResult(TypedDict):
     boundingBox: tuple[float, float, float, float]  # x, y, width, height
     className: str  # The detection class of the object.
     clipPaths: list[ClipPath]  # The detection clip paths that outlines various features or segments, like traced facial features.
+    clipped: bool  # Flag that indicates whether the detection was clipped by the detection input and may not be a full bounding box.
     cost: float  # The certainty that this is correct tracked object.
-    descriptor: str  # A base64 encoded Float32Array that represents the vector descriptor of the detection. Can be used to compute euclidian distance to determine similarity.
     embedding: str  # Base64 encoded embedding float32 vector.
     history: ObjectDetectionHistory
     id: str  # The id of the tracked object.
@@ -435,6 +443,11 @@ class MediaStreamTool(TypedDict):
     pass
 
 
+class Point(TypedDict):
+
+    pass
+
+
 class AdoptDevice(TypedDict):
 
     nativeId: str
@@ -451,6 +464,21 @@ class AudioVolumes(TypedDict):
 
     pass
 
+
+class ClusterForkInterfaceOptions(TypedDict):
+
+    clusterWorkerId: str  # The id of the cluster worker id that will execute this fork.
+    id: str  # The id of the device that is associated with this fork.
+    nativeId: str  # The native id of the mixin that is associated with this fork.
+
+class ClusterWorker(TypedDict):
+
+    address: str
+    forks: list[ClusterFork]
+    id: str
+    labels: list[str]
+    mode: Any | Any
+    name: str
 
 class ColorHsv(TypedDict):
     """Represents an HSV color value component."""
@@ -538,20 +566,6 @@ class EventListenerOptions(TypedDict):
     mixinId: str  # The EventListener will listen to events and property changes from a device or mixin that is suppressed by a mixin.
     watch: bool  # This EventListener will passively watch for events, and not initiate polling.
 
-class FFmpegInput(TypedDict):
-
-    container: str
-    destinationVideoBitrate: float
-    env: Any  # Environment variables to set when launching FFmpeg.
-    ffmpegPath: str  # Path to a custom FFmpeg binary.
-    h264EncoderArguments: list[str]
-    h264FilterArguments: list[str]
-    inputArguments: list[str]
-    mediaStreamOptions: ResponseMediaStreamOptions
-    url: str  # The media url for this FFmpegInput.
-    urls: list[str]  # Alternate media urls for this FFmpegInput.
-    videoDecoderArguments: list[str]
-
 class FanState(TypedDict):
 
     counterClockwise: bool
@@ -568,6 +582,20 @@ class FanStatus(TypedDict):
     mode: FanMode
     speed: float  # Rotations per minute, if available, otherwise 0 or 1.
     swing: bool
+
+class FFmpegInput(TypedDict):
+
+    container: str
+    destinationVideoBitrate: float
+    env: Any  # Environment variables to set when launching FFmpeg.
+    ffmpegPath: str  # Path to a custom FFmpeg binary.
+    h264EncoderArguments: list[str]
+    h264FilterArguments: list[str]
+    inputArguments: list[str]
+    mediaStreamOptions: ResponseMediaStreamOptions
+    url: str  # The media url for this FFmpegInput.
+    urls: list[str]  # Alternate media urls for this FFmpegInput.
+    videoDecoderArguments: list[str]
 
 class HttpRequest(TypedDict):
 
@@ -645,6 +673,7 @@ class NotifierOptions(TypedDict):
     badge: str
     body: str
     bodyWithSubtitle: str
+    critical: bool
     data: Any
     dir: NotificationDirection
     image: str
@@ -654,7 +683,7 @@ class NotifierOptions(TypedDict):
     requireInteraction: bool
     silent: bool
     subtitle: str
-    tag: str
+    tag: str  # Collapse key/id.
     timestamp: float
     vibrate: VibratePattern
 
@@ -666,6 +695,7 @@ class ObjectDetectionGeneratorResult(TypedDict):
 
 class ObjectDetectionGeneratorSession(TypedDict):
 
+    clusterWorkerId: str
     settings: Any
     sourceId: str
     zones: list[ObjectDetectionZone]
@@ -684,6 +714,7 @@ class ObjectDetectionModel(TypedDict):
 class ObjectDetectionSession(TypedDict):
 
     batch: float  # Denotes that this is the first sample in a batch of samples.
+    clusterWorkerId: str
     settings: Any
     sourceId: str
     zones: list[ObjectDetectionZone]
@@ -852,6 +883,12 @@ class SecuritySystemState(TypedDict):
     supportedModes: list[SecuritySystemMode]
     triggered: bool
 
+class Sensor(TypedDict):
+
+    name: str
+    unit: str
+    value: str | float
+
 class Setting(TypedDict):
 
     choices: list[str]
@@ -908,12 +945,20 @@ class VideoClipThumbnailOptions(TypedDict):
 
 class VideoFrameGeneratorOptions(TypedDict):
 
+    clusterWorkerId: str
     crop: Any
     firstFrameOnly: bool
     format: str
     fps: float
     queue: float
     resize: Any
+
+class VideoTextOverlay(TypedDict):
+
+    fontSize: float
+    origin: Point  # The top left position of the overlay in the image, normalized to 0-1.
+    readonly: bool
+    text: str | bool  # The text value to set the overlay to, if it is not readonly. True or false otherwise to enable/disable.
 
 class MediaConverterTypes(TypedDict):
     """[fromMimeType, toMimeType]"""
@@ -924,6 +969,9 @@ class MediaConverterTypes(TypedDict):
 class TamperState(TypedDict):
 
     pass
+
+
+TYPES_VERSION = "0.3.109"
 
 
 class AirPurifier:
@@ -978,9 +1026,9 @@ class BufferConverter:
         pass
 
 
-class CO2Sensor:
+class Buttons:
 
-    co2ppm: float
+    buttons: list[str]
 
 class Camera:
     """Camera devices can take still photos."""
@@ -996,6 +1044,17 @@ class Charger:
     """Charger reports whether or not a device is being charged from an external power source. Usually used for battery powered devices."""
 
     chargeState: ChargeState
+
+class ClusterForkInterface:
+    """Requests that the ScryptedDevice create a fork to"""
+
+    async def forkInterface(self, forkInterface: ObjectDetection, options: ClusterForkInterfaceOptions = None) -> ObjectDetection:
+        pass
+
+
+class CO2Sensor:
+
+    co2ppm: float
 
 class ColorSettingHsv:
     """ColorSettingHsv sets the color of a colored light using the HSV representation."""
@@ -1214,16 +1273,16 @@ class MotionSensor:
 
     motionDetected: bool
 
-class NOXSensor:
-
-    noxDensity: float
-
 class Notifier:
     """Notifier can be any endpoint that can receive messages, such as speakers, phone numbers, messaging clients, etc. The messages may optionally contain media."""
 
     async def sendNotification(self, title: str, options: NotifierOptions = None, media: str | MediaObject = None, icon: str | MediaObject = None) -> None:
         pass
 
+
+class NOXSensor:
+
+    noxDensity: float
 
 class OauthClient:
     """The OauthClient can be implemented to perform the browser based Oauth process from within a plugin."""
@@ -1279,6 +1338,11 @@ class OccupancySensor:
 
     occupied: bool
 
+class Online:
+    """Online denotes whether the device is online or unresponsive. It may be unresponsive due to being unplugged, network error, etc."""
+
+    online: bool
+
 class OnOff:
     """OnOff is a basic binary switch."""
 
@@ -1289,19 +1353,6 @@ class OnOff:
     async def turnOn(self) -> None:
         pass
 
-
-class Online:
-    """Online denotes whether the device is online or unresponsive. It may be unresponsive due to being unplugged, network error, etc."""
-
-    online: bool
-
-class PM10Sensor:
-
-    pm10Density: float
-
-class PM25Sensor:
-
-    pm25Density: float
 
 class PanTiltZoom:
 
@@ -1333,6 +1384,14 @@ class Pause:
         pass
 
 
+class PM10Sensor:
+
+    pm10Density: float
+
+class PM25Sensor:
+
+    pm25Density: float
+
 class PositionSensor:
 
     position: Position
@@ -1340,6 +1399,12 @@ class PositionSensor:
 class PowerSensor:
 
     powerDetected: bool
+
+class PressButtons:
+
+    async def pressButton(self, button: str) -> None:
+        pass
+
 
 class Program:
 
@@ -1478,6 +1543,10 @@ class SecuritySystem:
         pass
 
 
+class Sensors:
+
+    sensors: Mapping[str, Sensor]
+
 class Settings:
     """Settings viewing and editing of device configurations that describe or modify behavior."""
 
@@ -1487,6 +1556,10 @@ class Settings:
     async def putSetting(self, key: str, value: SettingValue) -> None:
         pass
 
+
+class Sleep:
+
+    sleeping: bool
 
 class StartStop:
     """StartStop represents a device that can be started, stopped, and possibly paused and resumed. Typically vacuum cleaners or washers."""
@@ -1503,19 +1576,6 @@ class StreamService:
     """Generic bidirectional stream connection."""
 
     async def connectStream(self, input: AsyncGenerator[Any, None] = None, options: Any = None) -> AsyncGenerator[Any, None]:
-        pass
-
-
-class TTY:
-    """TTY connection offered by a remote device that can be connected to by an interactive terminal interface.  Implementors should also implement StreamService to handle the actual data transfer."""
-
-
-    pass
-
-class TTYSettings:
-    """TTYSettings allows TTY backends to query plugins for modifications to the (non-)interactive terminal environment."""
-
-    async def getTTYSettings(self) -> Any:
         pass
 
 
@@ -1539,13 +1599,22 @@ class Thermometer:
         pass
 
 
+class TTY:
+    """TTY connection offered by a remote device that can be connected to by an interactive terminal interface.  Implementors should also implement StreamService to handle the actual data transfer."""
+
+
+    pass
+
+class TTYSettings:
+    """TTYSettings allows TTY backends to query plugins for modifications to the (non-)interactive terminal environment."""
+
+    async def getTTYSettings(self) -> Any:
+        pass
+
+
 class UltravioletSensor:
 
     ultraviolet: float
-
-class VOCSensor:
-
-    vocDensity: float
 
 class VideoCamera:
     """VideoCamera devices can capture video streams."""
@@ -1577,10 +1646,10 @@ class VideoClips:
     async def getVideoClip(self, videoId: str) -> MediaObject:
         pass
 
-    async def getVideoClipThumbnail(self, thumbnailId: str, options: VideoClipThumbnailOptions = None) -> MediaObject:
+    async def getVideoClips(self, options: VideoClipOptions = None) -> list[VideoClip]:
         pass
 
-    async def getVideoClips(self, options: VideoClipOptions = None) -> list[VideoClip]:
+    async def getVideoClipThumbnail(self, thumbnailId: str, options: VideoClipThumbnailOptions = None) -> MediaObject:
         pass
 
     async def removeVideoClips(self, videoClipIds: list[str]) -> None:
@@ -1617,6 +1686,19 @@ class VideoRecorderManagement:
     async def setRecordingActive(self, recordingActive: bool) -> None:
         pass
 
+
+class VideoTextOverlays:
+
+    async def getVideoTextOverlays(self) -> Mapping[str, VideoTextOverlay]:
+        pass
+
+    async def setVideoTextOverlay(self, id: str, value: VideoTextOverlay) -> None:
+        pass
+
+
+class VOCSensor:
+
+    vocDensity: float
 
 class Logger:
     """Logger is exposed via log.* to allow writing to the Scrypted log."""
@@ -1705,9 +1787,6 @@ class SystemManager:
         pass
 
     def getDeviceByName(self, name: str) -> ScryptedDevice:
-        pass
-
-    def getDeviceState(self, id: str) -> Any:
         pass
 
     def getSystemState(self) -> Any:
@@ -1799,6 +1878,21 @@ class EndpointManager:
         pass
 
 
+class ClusterManager:
+
+    def getClusterAddress(self) -> str:
+        pass
+
+    def getClusterMode(self) -> Any | Any:
+        pass
+
+    def getClusterWorkerId(self) -> str:
+        pass
+
+    async def getClusterWorkers(self) -> Mapping[str, ClusterWorker]:
+        pass
+
+
 class ScryptedInterfaceProperty(str, Enum):
     id = "id"
     info = "info"
@@ -1820,6 +1914,8 @@ class ScryptedInterfaceProperty(str, Enum):
     colorTemperature = "colorTemperature"
     rgb = "rgb"
     hsv = "hsv"
+    buttons = "buttons"
+    sensors = "sensors"
     running = "running"
     paused = "paused"
     docked = "docked"
@@ -1840,6 +1936,7 @@ class ScryptedInterfaceProperty(str, Enum):
     converters = "converters"
     binaryState = "binaryState"
     tampered = "tampered"
+    sleeping = "sleeping"
     powerDetected = "powerDetected"
     audioDetected = "audioDetected"
     motionDetected = "motionDetected"
@@ -1880,6 +1977,7 @@ class ScryptedInterfaceMethods(str, Enum):
     setColorTemperature = "setColorTemperature"
     setRgb = "setRgb"
     setHsv = "setHsv"
+    pressButton = "pressButton"
     sendNotification = "sendNotification"
     start = "start"
     stop = "stop"
@@ -1898,6 +1996,8 @@ class ScryptedInterfaceMethods(str, Enum):
     getVideoStreamOptions = "getVideoStreamOptions"
     getPrivacyMasks = "getPrivacyMasks"
     setPrivacyMasks = "setPrivacyMasks"
+    getVideoTextOverlays = "getVideoTextOverlays"
+    setVideoTextOverlay = "setVideoTextOverlay"
     getRecordingStream = "getRecordingStream"
     getRecordingStreamCurrentTime = "getRecordingStreamCurrentTime"
     getRecordingStreamOptions = "getRecordingStreamOptions"
@@ -1907,8 +2007,8 @@ class ScryptedInterfaceMethods(str, Enum):
     ptzCommand = "ptzCommand"
     getRecordedEvents = "getRecordedEvents"
     getVideoClip = "getVideoClip"
-    getVideoClipThumbnail = "getVideoClipThumbnail"
     getVideoClips = "getVideoClips"
+    getVideoClipThumbnail = "getVideoClipThumbnail"
     removeVideoClips = "removeVideoClips"
     setVideoStreamOptions = "setVideoStreamOptions"
     startIntercom = "startIntercom"
@@ -1957,6 +2057,7 @@ class ScryptedInterfaceMethods(str, Enum):
     eval = "eval"
     loadScripts = "loadScripts"
     saveScript = "saveScript"
+    forkInterface = "forkInterface"
     trackObjects = "trackObjects"
     getDetectionInput = "getDetectionInput"
     getObjectTypes = "getObjectTypes"
@@ -2134,6 +2235,22 @@ class DeviceState:
         self.setScryptedProperty("hsv", value)
 
     @property
+    def buttons(self) -> list[str]:
+        return self.getScryptedProperty("buttons")
+
+    @buttons.setter
+    def buttons(self, value: list[str]):
+        self.setScryptedProperty("buttons", value)
+
+    @property
+    def sensors(self) -> Mapping[str, Sensor]:
+        return self.getScryptedProperty("sensors")
+
+    @sensors.setter
+    def sensors(self, value: Mapping[str, Sensor]):
+        self.setScryptedProperty("sensors", value)
+
+    @property
     def running(self) -> bool:
         return self.getScryptedProperty("running")
 
@@ -2292,6 +2409,14 @@ class DeviceState:
     @tampered.setter
     def tampered(self, value: TamperState):
         self.setScryptedProperty("tampered", value)
+
+    @property
+    def sleeping(self) -> bool:
+        return self.getScryptedProperty("sleeping")
+
+    @sleeping.setter
+    def sleeping(self, value: bool):
+        self.setScryptedProperty("sleeping", value)
 
     @property
     def powerDetected(self) -> bool:
@@ -2567,6 +2692,27 @@ ScryptedInterfaceDescriptors = {
       "hsv"
     ]
   },
+  "Buttons": {
+    "name": "Buttons",
+    "methods": [],
+    "properties": [
+      "buttons"
+    ]
+  },
+  "PressButtons": {
+    "name": "PressButtons",
+    "methods": [
+      "pressButton"
+    ],
+    "properties": []
+  },
+  "Sensors": {
+    "name": "Sensors",
+    "methods": [],
+    "properties": [
+      "sensors"
+    ]
+  },
   "Notifier": {
     "name": "Notifier",
     "methods": [
@@ -2677,6 +2823,14 @@ ScryptedInterfaceDescriptors = {
     ],
     "properties": []
   },
+  "VideoTextOverlays": {
+    "name": "VideoTextOverlays",
+    "methods": [
+      "getVideoTextOverlays",
+      "setVideoTextOverlay"
+    ],
+    "properties": []
+  },
   "VideoRecorder": {
     "name": "VideoRecorder",
     "methods": [
@@ -2717,8 +2871,8 @@ ScryptedInterfaceDescriptors = {
     "name": "VideoClips",
     "methods": [
       "getVideoClip",
-      "getVideoClipThumbnail",
       "getVideoClips",
+      "getVideoClipThumbnail",
       "removeVideoClips"
     ],
     "properties": []
@@ -2891,6 +3045,13 @@ ScryptedInterfaceDescriptors = {
     "methods": [],
     "properties": [
       "tampered"
+    ]
+  },
+  "Sleep": {
+    "name": "Sleep",
+    "methods": [],
+    "properties": [
+      "sleeping"
     ]
   },
   "PowerSensor": {
@@ -3086,6 +3247,13 @@ ScryptedInterfaceDescriptors = {
     ],
     "properties": []
   },
+  "ClusterForkInterface": {
+    "name": "ClusterForkInterface",
+    "methods": [
+      "forkInterface"
+    ],
+    "properties": []
+  },
   "ObjectTracker": {
     "name": "ObjectTracker",
     "methods": [
@@ -3221,13 +3389,16 @@ class EventListenerRegister:
 class HttpResponse:
     """Response object provided by the HttpRequestHandler."""
 
-    def send(self, body: str) -> None:
+    def send(self, body: str, options: HttpResponseOptions = None) -> None:
         pass
 
-    def sendFile(self, path: str) -> None:
+    def sendFile(self, path: str, options: HttpResponseOptions = None) -> None:
         pass
 
-    def sendSocket(self, socket: Any, options: HttpResponseOptions) -> None:
+    def sendSocket(self, socket: Any, options: HttpResponseOptions = None) -> None:
+        pass
+
+    def sendStream(self, stream: AsyncGenerator[bytearray, None], options: HttpResponseOptions = None) -> None:
         pass
 
 

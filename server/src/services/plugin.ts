@@ -50,7 +50,6 @@ export class PluginComponent {
         await this.scrypted.datastore.upsert(pluginDevice);
         const host = this.scrypted.getPluginHostForDeviceId(id);
         await host?.remote?.setNativeId?.(pluginDevice.nativeId, pluginDevice._id, storage);
-        this.scrypted.stateManager.notifyInterfaceEvent(pluginDevice, 'Storage', undefined);
     }
     async setMixins(id: string, mixins: string[]) {
         mixins = mixins || [];
@@ -115,7 +114,6 @@ export class PluginComponent {
         return {
             pid: host?.worker?.pid,
             clientsCount: host?.io?.clientsCount,
-            stats: host?.stats,
             rpcObjects,
             packageJson,
             pendingResults,
@@ -174,34 +172,16 @@ export class PluginComponent {
         consoleServer.clear(pluginDevice.nativeId);
     }
 
-    async getRemoteServicePort(pluginId: string, name: string, ...args: any[]): Promise<number> {
+    async getRemoteServicePort(pluginId: string, name: string, ...args: any[]): Promise<[number, string]> {
         if (name === 'console') {
             const consoleServer = await this.scrypted.plugins[pluginId].consoleServer;
-            return consoleServer.readPort;
+            return [consoleServer.readPort, process.env.SCRYPTED_CLUSTER_ADDRESS];
         }
         if (name === 'console-writer') {
             const consoleServer = await this.scrypted.plugins[pluginId].consoleServer;
-            return consoleServer.writePort;
+            return [consoleServer.writePort, process.env.SCRYPTED_CLUSTER_ADDRESS];
         }
 
         return this.scrypted.plugins[pluginId].remote.getServicePort(name, ...args);
-    }
-
-    async setHostParam(pluginId: string, name: string, param?: any) {
-        const host = this.scrypted.plugins[pluginId];
-        if (!host)
-            return;
-
-        const key = `oob-param-${name}`;
-        if (param === undefined)
-            delete host.peer.params[key];
-        else
-            host.peer.params[key] = param;
-    }
-
-    async getHostParam(pluginId: string, name: string) {
-        const host = this.scrypted.plugins[pluginId];
-        const key = `oob-param-${name}`;
-        return host?.peer?.params?.[key];
     }
 }

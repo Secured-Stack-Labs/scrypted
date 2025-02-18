@@ -18,7 +18,7 @@ function readyn() {
 }
 
 cd /tmp
-SCRYPTED_VERSION=v0.120.0
+SCRYPTED_VERSION=v0.137.0
 SCRYPTED_TAR_ZST=scrypted-$SCRYPTED_VERSION.tar.zst
 if [ -z "$VMID" ]
 then
@@ -26,8 +26,7 @@ then
 fi
 
 SCRYPTED_BACKUP_VMID=10445
-if [ -n "$SCRYPTED_RESTORE" ]
-then
+function prepareScryptedRestore() {
     pct config $VMID 2>&1 > /dev/null
     if [ "$?" != "0" ]
     then
@@ -43,6 +42,11 @@ then
     RESTORE_VMID=$VMID
     VMID=$SCRYPTED_BACKUP_VMID
     pct destroy $VMID 2>&1 > /dev/null
+}
+
+if [ -n "$SCRYPTED_RESTORE" ]
+then
+    prepareScryptedRestore
 fi
 
 echo "Downloading scrypted container backup."
@@ -71,31 +75,56 @@ then
         echo ""
         echo "==============================================================="
         echo "Existing container $VMID found."
-        echo "Please choose from the following options to resolve this error."
         echo "==============================================================="
         echo ""
-        echo "1. To reinstall and reset Scrypted, run this script with --force to overwrite the existing container."
-        echo "THIS WILL WIPE THE EXISTING CONFIGURATION:"
-        echo ""
-        echo "VMID=$VMID bash $0 --force"
-        echo ""
-        echo "2. To reinstall Scrypted and and retain existing configuration, run this script with the environment variable SCRYPTED_RESTORE=true."
+        echo "This script can be used ro reinstall Scrypted and reset the container to a factory state."
         echo "This preserves existing data. Creating a backup within Scrypted is highly recommended in case the reset fails."
         echo "THIS WILL WIPE ADDITIONAL VOLUMES SUCH AS NVR STORAGE. NVR volumes will need to be readded after the restore:"
-        echo ""
-        echo "SCRYPTED_RESTORE=true VMID=$VMID bash $0"
-        echo ""
-        echo "3. To install and run multiple Scrypted containers, run this script with the environment variable specifying"
-        echo "the new VMID=<number>. For example, to create a new LXC with VMID 12345:"
-        echo ""
-        echo "VMID=12345 bash $0"
+        readyn "Reinstall Scrypted and and retain existing configuration?"
 
-        exit 1
+        if [ "$yn" != "y" ]
+        then
+            echo ""
+            echo "1. To reinstall and reset Scrypted, run this script with --force to overwrite the existing container."
+            echo "THIS WILL WIPE THE EXISTING CONFIGURATION:"
+            echo ""
+            echo "VMID=$VMID bash $0 --force"
+            echo ""
+            echo "2. To reinstall Scrypted and and retain existing configuration, run this script with the environment variable SCRYPTED_RESTORE=true."
+            echo "This preserves existing data. Creating a backup within Scrypted is highly recommended in case the reset fails."
+            echo "THIS WILL WIPE ADDITIONAL VOLUMES SUCH AS NVR STORAGE. NVR volumes will need to be readded after the restore:"
+            echo ""
+            echo "SCRYPTED_RESTORE=true VMID=$VMID bash $0"
+            echo ""
+            echo "3. To install and run multiple Scrypted containers, run this script with the environment variable specifying"
+            echo "the new VMID=<number>. For example, to create a new LXC with VMID 12345:"
+            echo ""
+            echo "VMID=12345 bash $0"
+            exit 1
+        fi
+
+        SCRYPTED_RESTORE=true
+        prepareScryptedRestore
+    fi
+fi
+
+if [[ ! "$@" =~ "--storage" ]]
+then
+    HAS_LOCAL_LVM=$(pvesm status | grep local-lvm | grep active)
+    HAS_LOCAL_ZFS=$(pvesm status | grep local-zfs | grep active)
+    if [ ! -z "$HAS_LOCAL_LVM" ]
+    then
+        RESTORE_STORAGE="--storage local-lvm"
+    elif [ ! -z "$HAS_LOCAL_ZFS" ]
+    then
+        RESTORE_STORAGE="--storage local-zfs"
+    else
+        echo "Could not determine a valid storage device. One may need to be specified manually."
     fi
 fi
 
 pct stop $VMID 2>&1 > /dev/null
-pct restore $VMID $SCRYPTED_TAR_ZST $@
+pct restore $VMID $SCRYPTED_TAR_ZST $RESTORE_STORAGE $@
 
 if [ "$?" != "0" ]
 then
@@ -150,7 +179,7 @@ if [ -n "$SCRYPTED_RESTORE" ]
 then
     echo ""
     echo ""
-    echo "Running this script will reset the Scrypted container to a factory state while preserving existing data."
+    echo "This script will reset the Scrypted container to a factory state while preserving existing data."
     echo "IT IS RECOMMENDED TO CREATE A BACKUP INSIDE SCRYPTED FIRST."
     readyn "Are you sure you want to continue?"
     if [ "$yn" != "y" ]
@@ -220,7 +249,7 @@ then
 
     VMID=$RESTORE_VMID
     echo "Restoring with reset image..."
-    pct restore --force 1 $VMID *.tar $@
+    pct restore --force 1 $VMID *.tar $RESTORE_STORAGE $@
 
     echo "Restoring volumes..."
     move_volume $SCRYPTED_BACKUP_VMID $VMID mp0 hide-warning
@@ -232,6 +261,9 @@ then
 
     pct destroy $SCRYPTED_BACKUP_VMID
 fi
+
+echo "Enabling startup on boot..."
+pct set $VMID -onboot 1
 
 readyn "Add udev rule for hardware acceleration? This may conflict with existing rules."
 if [ "$yn" == "y" ]

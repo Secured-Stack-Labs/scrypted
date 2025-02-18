@@ -35,18 +35,18 @@
       "interfaces": [
          "DeviceProvider",
          "Settings",
+         "ClusterForkInterface",
          "ObjectDetection",
          "ObjectDetectionPreview"
       ],
       "labels": {
          "require": [
-            "compute",
-            "x64"
+            "@scrypted/openvino"
          ]
       }
    },
    "devDependencies": {
       "@scrypted/sdk": "file:../../sdk"
    },
-   "version": "0.1.130"
+   "version": "0.1.177"
 }

@@ -1,10 +1,9 @@
-import worker_threads from "worker_threads";
 import { EventEmitter } from "events";
+import worker_threads from "worker_threads";
 import { RpcMessage, RpcPeer, RpcSerializer } from "../../rpc";
-import { RuntimeWorker, RuntimeWorkerOptions } from "./runtime-worker";
 import { BufferSerializer } from '../../rpc-buffer-serializer';
 import { NODE_PLUGIN_THREAD_PROCESS } from "./node-fork-worker";
-
+import { RuntimeWorker, RuntimeWorkerOptions } from "./runtime-worker";
 
 class BufferTransfer implements RpcSerializer {
     bufferSerializer = new BufferSerializer();
@@ -23,7 +22,10 @@ class BufferTransfer implements RpcSerializer {
 
         serializationContext.transferList ||= [];
         const transferList: worker_threads.TransferListItem[] = serializationContext.transferList;
-        transferList.push(value.buffer);
+        const { buffer } = value;
+        // shared array buffers doesn't need to be transferred.
+        if (!(buffer instanceof SharedArrayBuffer))
+            transferList.push(buffer);
         // can return the value directly, as the buffer is transferred.
         return value;
     }

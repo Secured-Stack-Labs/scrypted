@@ -69,9 +69,13 @@ def parse_labels(userDefined):
     return parse_label_contents(classes)
 
 
-class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProvider):
-    def __init__(self, nativeId: str | None = None):
-        super().__init__(nativeId=nativeId)
+class CoreMLPlugin(
+    PredictPlugin,
+    scrypted_sdk.Settings,
+    scrypted_sdk.DeviceProvider,
+):
+    def __init__(self, nativeId: str | None = None, forked: bool = False):
+        super().__init__(nativeId=nativeId, forked=forked)
 
         model = self.storage.getItem("model") or "Default"
         if model == "Default" or model not in availableModels:
@@ -139,7 +143,9 @@ class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProv
 
         self.faceDevice = None
         self.textDevice = None
-        asyncio.ensure_future(self.prepareRecognitionModels(), loop=self.loop)
+
+        if not self.forked:
+            asyncio.ensure_future(self.prepareRecognitionModels(), loop=self.loop)
 
     async def prepareRecognitionModels(self):
         try:
@@ -148,6 +154,7 @@ class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProv
                     "nativeId": "facerecognition",
                     "type": scrypted_sdk.ScryptedDeviceType.Builtin.value,
                     "interfaces": [
+                            scrypted_sdk.ScryptedInterface.ClusterForkInterface.value,
                         scrypted_sdk.ScryptedInterface.ObjectDetection.value,
                     ],
                     "name": "CoreML Face Recognition",
@@ -160,6 +167,7 @@ class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProv
                         "nativeId": "textrecognition",
                         "type": scrypted_sdk.ScryptedDeviceType.Builtin.value,
                         "interfaces": [
+                            scrypted_sdk.ScryptedInterface.ClusterForkInterface.value,
                             scrypted_sdk.ScryptedInterface.ObjectDetection.value,
                         ],
                         "name": "CoreML Text Recognition",
@@ -176,10 +184,10 @@ class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProv
 
     async def getDevice(self, nativeId: str) -> Any:
         if nativeId == "facerecognition":
-            self.faceDevice = self.faceDevice or CoreMLFaceRecognition(nativeId)
+            self.faceDevice = self.faceDevice or CoreMLFaceRecognition(self, nativeId)
             return self.faceDevice
         if nativeId == "textrecognition":
-            self.textDevice = self.textDevice or CoreMLTextRecognition(nativeId)
+            self.textDevice = self.textDevice or CoreMLTextRecognition(self, nativeId)
             return self.textDevice
         raise Exception("unknown device")
 
@@ -227,7 +235,7 @@ class CoreMLPlugin(PredictPlugin, scrypted_sdk.Settings, scrypted_sdk.DeviceProv
                 return ret
 
             if self.scrypted_yolo_nas:
-                predictions  = list(out_dict.values())
+                predictions = list(out_dict.values())
                 objs = yolo.parse_yolo_nas(predictions)
                 ret = self.create_detection_result(objs, src_size, cvss)
                 return ret

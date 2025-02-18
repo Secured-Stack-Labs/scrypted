@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import gc
-import hashlib
 import inspect
 import multiprocessing
 import multiprocessing.connection
 import os
+from pathlib import Path
 import platform
 import random
 import sys
-import threading
 import time
 import traceback
 import zipfile
@@ -20,12 +18,14 @@ from asyncio.futures import Future
 from asyncio.streams import StreamReader, StreamWriter
 from collections.abc import Mapping
 from io import StringIO
-from typing import Any, Optional, Set, Tuple, TypedDict, Callable, Coroutine
-
+from typing import Any, Callable, Coroutine, Optional, Set, Tuple, TypedDict
+import plugin_console
 import plugin_volume as pv
 import rpc
 import rpc_reader
 import scrypted_python.scrypted_sdk.types
+from cluster_setup import ClusterSetup
+import cluster_labels
 from plugin_pip import install_with_pip, need_requirements, remove_pip_dirs
 from scrypted_python.scrypted_sdk import PluginFork, ScryptedStatic
 from scrypted_python.scrypted_sdk.types import (
@@ -42,15 +42,12 @@ SCRYPTED_REQUIREMENTS = """
 ptpython
 wheel
 """.strip()
-
-
-class ClusterObject(TypedDict):
-    id: str
-    address: str
-    port: int
-    proxyId: str
-    sourceKey: str
-    sha256: str
+if sys.version_info.minor >= 13:
+    # telnetlib was removed in Python 3.13
+    SCRYPTED_REQUIREMENTS = f"""
+{SCRYPTED_REQUIREMENTS}
+standard-telnetlib
+""".strip()
 
 
 class SystemDeviceState(TypedDict):
@@ -61,8 +58,10 @@ class SystemDeviceState(TypedDict):
 
 def ensure_not_coroutine(fn: Callable | Coroutine) -> Callable:
     if inspect.iscoroutinefunction(fn):
+
         def wrapper(*args, **kwargs):
             return asyncio.create_task(fn(*args, **kwargs))
+
         return wrapper
     return fn
 
@@ -110,25 +109,29 @@ class DeviceProxy(object):
 class EventListenerRegisterImpl(scrypted_python.scrypted_sdk.EventListenerRegister):
     removeListener: Callable[[], None]
 
-    def __init__(self, removeListener: Callable[[], None] | Coroutine[Any, None, None]) -> None:
+    def __init__(
+        self, removeListener: Callable[[], None] | Coroutine[Any, None, None]
+    ) -> None:
         self.removeListener = ensure_not_coroutine(removeListener)
 
 
 class EventRegistry(object):
     systemListeners: Set[scrypted_python.scrypted_sdk.EventListener]
-    listeners: Mapping[str, Set[Callable[[scrypted_python.scrypted_sdk.EventDetails, Any], None]]]
+    listeners: Mapping[
+        str, Set[Callable[[scrypted_python.scrypted_sdk.EventDetails, Any], None]]
+    ]
 
-    __allowedEventInterfaces = set([
-        ScryptedInterface.ScryptedDevice.value,
-        'Logger',
-        'Storage'
-    ])
+    __allowedEventInterfaces = set(
+        [ScryptedInterface.ScryptedDevice.value, "Logger"]
+    )
 
     def __init__(self) -> None:
         self.systemListeners = set()
         self.listeners = {}
 
-    def __getMixinEventName(self, options: str | scrypted_python.scrypted_sdk.EventListenerOptions) -> str:
+    def __getMixinEventName(
+        self, options: str | scrypted_python.scrypted_sdk.EventListenerOptions
+    ) -> str:
         mixinId = None
         if type(options) == str:
             event = options
@@ -169,7 +172,15 @@ class EventRegistry(object):
         self.listeners[id].add(callback)
         return EventListenerRegisterImpl(lambda: self.listeners[id].remove(callback))
 
-    def notify(self, id: str, eventTime: int, eventInterface: str, property: str, value: Any, options: dict = None):
+    def notify(
+        self,
+        id: str,
+        eventTime: int,
+        eventInterface: str,
+        property: str,
+        value: Any,
+        options: dict = None,
+    ):
         options = options or {}
         changed = options.get("changed")
         mixinId = options.get("mixinId")
@@ -188,7 +199,13 @@ class EventRegistry(object):
 
         return self.notifyEventDetails(id, eventDetails, value)
 
-    def notifyEventDetails(self, id: str, eventDetails: scrypted_python.scrypted_sdk.EventDetails, value: Any, eventInterface: str = None):
+    def notifyEventDetails(
+        self,
+        id: str,
+        eventDetails: scrypted_python.scrypted_sdk.EventDetails,
+        value: Any,
+        eventInterface: str = None,
+    ):
         if not eventDetails.get("eventId"):
             eventDetails["eventId"] = self.__generateBase36Str()
         if not eventInterface:
@@ -197,8 +214,9 @@ class EventRegistry(object):
         # system listeners only get state changes.
         # there are many potentially noisy stateless events, like
         # object detection and settings changes
-        if (eventDetails.get("property") and not eventDetails.get("mixinId")) or \
-            (eventInterface in EventRegistry.__allowedEventInterfaces):
+        if (eventDetails.get("property") and not eventDetails.get("mixinId")) or (
+            eventInterface in EventRegistry.__allowedEventInterfaces
+        ):
             for listener in self.systemListeners:
                 listener(id, eventDetails, value)
 
@@ -215,6 +233,30 @@ class EventRegistry(object):
                 listener(eventDetails, value)
 
         return True
+
+
+class ClusterManager(scrypted_python.scrypted_sdk.types.ClusterManager):
+    def __init__(self, remote: PluginRemote):
+        self.remote = remote
+        self.clusterService = None
+
+    def getClusterMode(self) -> Any | Any:
+        return os.getenv("SCRYPTED_CLUSTER_MODE", None)
+
+    def getClusterAddress(self) -> str:
+        return os.getenv("SCRYPTED_CLUSTER_ADDRESS", None)
+
+    def getClusterWorkerId(self) -> str:
+        return self.remote.clusterSetup.clusterWorkerId
+
+    async def getClusterWorkers(
+        self,
+    ) -> Mapping[str, scrypted_python.scrypted_sdk.types.ClusterWorker]:
+        self.clusterService = self.clusterService or asyncio.ensure_future(
+            self.remote.api.getComponent("cluster-fork")
+        )
+        cs = await self.clusterService
+        return await cs.getClusterWorkers()
 
 
 class SystemManager(scrypted_python.scrypted_sdk.types.SystemManager):
@@ -305,19 +347,27 @@ class SystemManager(scrypted_python.scrypted_sdk.types.SystemManager):
         callback = ensure_not_coroutine(callback)
         if type(options) != str and options.get("watch"):
             return self.events.listenDevice(
-                id, options,
-                lambda eventDetails, eventData: callback(self.getDeviceById(id), eventDetails, eventData)
+                id,
+                options,
+                lambda eventDetails, eventData: callback(
+                    self.getDeviceById(id), eventDetails, eventData
+                ),
             )
 
         register_fut = asyncio.ensure_future(
             self.api.listenDevice(
-                id, options,
-                lambda eventDetails, eventData: callback(self.getDeviceById(id), eventDetails, eventData)
+                id,
+                options,
+                lambda eventDetails, eventData: callback(
+                    self.getDeviceById(id), eventDetails, eventData
+                ),
             )
         )
+
         async def unregister():
             register = await register_fut
             await register.removeListener()
+
         return EventListenerRegisterImpl(lambda: asyncio.ensure_future(unregister()))
 
     async def removeDevice(self, id: str) -> None:
@@ -426,11 +476,39 @@ class MediaManager:
     ) -> scrypted_python.scrypted_sdk.types.MediaObject:
         return await self.mediaManager.createMediaObjectFromUrl(data, options)
 
-    async def getFFmpegPath(self) -> str:
+    async def getFFmpegPath(self):
+        # try to get the ffmpeg path as a value of another variable
+        # ie, in docker builds:
+        # export SCRYPTED_FFMPEG_PATH_ENV_VARIABLE=SCRYPTED_RASPBIAN_FFMPEG_PATH
+        v = os.getenv('SCRYPTED_FFMPEG_PATH_ENV_VARIABLE')
+        if v:
+            f = os.getenv(v)
+            if f and Path(f).exists():
+                return f
+
+        # try to get the ffmpeg path from a variable
+        # ie:
+        # export SCRYPTED_FFMPEG_PATH=/usr/local/bin/ffmpeg
+        f = os.getenv('SCRYPTED_FFMPEG_PATH')
+        if f and Path(f).exists():
+            return f
+
         return await self.mediaManager.getFFmpegPath()
 
-    async def getFilesPath(self) -> str:
-        return await self.mediaManager.getFilesPath()
+    async def getFilesPath(self):
+        # Get the value of the SCRYPTED_PLUGIN_VOLUME environment variable
+        files_path = os.getenv('SCRYPTED_PLUGIN_VOLUME')
+        if not files_path:
+            raise ValueError('SCRYPTED_PLUGIN_VOLUME env variable not set?')
+        
+        # Construct the path for the 'files' directory
+        ret = Path(files_path) / 'files'
+        
+        # Ensure the directory exists
+        await asyncio.to_thread(ret.mkdir, parents=True, exist_ok=True)
+        
+        # Return the constructed directory path as a string
+        return str(ret)
 
 
 class DeviceState(scrypted_python.scrypted_sdk.types.DeviceState):
@@ -555,17 +633,37 @@ class DeviceManager(scrypted_python.scrypted_sdk.types.DeviceManager):
         return self.nativeIds.get(nativeId, None)
 
 
+class PeerLiveness:
+    def __init__(self, loop: AbstractEventLoop):
+        self.killed = Future(loop=loop)
+
+    async def waitKilled(self):
+        await self.killed
+
+
+def safe_set_result(fut: Future, result: Any):
+    try:
+        fut.set_result(result)
+    except:
+        pass
+
+
 class PluginRemote:
     def __init__(
-        self, peer: rpc.RpcPeer, api, pluginId: str, hostInfo, loop: AbstractEventLoop
+        self,
+        clusterSetup: ClusterSetup,
+        api,
+        pluginId: str,
+        hostInfo,
+        loop: AbstractEventLoop,
     ):
         self.systemState: Mapping[str, Mapping[str, SystemDeviceState]] = {}
         self.nativeIds: Mapping[str, DeviceStorage] = {}
         self.mediaManager: MediaManager
+        self.clusterManager: ClusterManager
         self.consoles: Mapping[str, Future[Tuple[StreamReader, StreamWriter]]] = {}
-        self.ptimeSum = 0
-        self.allMemoryStats = {}
-        self.peer = peer
+        self.peer = clusterSetup.peer
+        self.clusterSetup = clusterSetup
         self.api = api
         self.pluginId = pluginId
         self.hostInfo = hostInfo
@@ -593,8 +691,10 @@ class PluginRemote:
             consoleFuture = Future()
             self.consoles[nativeId] = consoleFuture
             plugins = await self.api.getComponent("plugins")
-            port = await plugins.getRemoteServicePort(self.pluginId, "console-writer")
-            connection = await asyncio.open_connection(port=port)
+            port, hostname = await plugins.getRemoteServicePort(
+                self.pluginId, "console-writer"
+            )
+            connection = await asyncio.open_connection(host=hostname, port=port)
             _, writer = connection
             if not nativeId:
                 nid = "undefined"
@@ -623,217 +723,26 @@ class PluginRemote:
             self.loop,
         )
 
-    async def loadZip(self, packageJson, getZip: Any, options: dict):
+    async def loadZip(self, packageJson, zipAPI: Any, options: dict):
         try:
-            return await self.loadZipWrapped(packageJson, getZip, options)
+            return await self.loadZipWrapped(packageJson, zipAPI, options)
         except:
             print("plugin start/fork failed")
             traceback.print_exc()
             raise
 
-    async def loadZipWrapped(self, packageJson, getZip: Any, options: dict):
+    async def loadZipWrapped(self, packageJson, zipAPI: Any, zipOptions: dict):
+        await self.clusterSetup.initializeCluster(zipOptions)
+
         sdk = ScryptedStatic()
 
-        clusterId = options["clusterId"]
-        clusterSecret = options["clusterSecret"]
-        SCRYPTED_CLUSTER_ADDRESS = os.environ.get("SCRYPTED_CLUSTER_ADDRESS", None)
+        sdk.connectRPCObject = lambda v: self.clusterSetup.connectRPCObject(v)
 
-        def computeClusterObjectHash(o: ClusterObject) -> str:
-            m = hashlib.sha256()
-            m.update(
-                bytes(
-                    f"{o['id']}{o.get('address') or ''}{o['port']}{o.get('sourceKey', None) or ''}{o['proxyId']}{clusterSecret}",
-                    "utf8",
-                )
-            )
-            return base64.b64encode(m.digest()).decode("utf-8")
-
-        def isClusterAddress(address: str):
-            return not address or address == SCRYPTED_CLUSTER_ADDRESS
-
-        def onProxySerialization(peer: rpc.RpcPeer, value: Any, sourceKey: str = None):
-            properties: dict = rpc.RpcPeer.prepareProxyProperties(value) or {}
-            clusterEntry = properties.get("__cluster", None)
-            proxyId: str
-            existing = peer.localProxied.get(value, None)
-            if existing:
-                proxyId = existing["id"]
-            else:
-                proxyId = (
-                    clusterEntry and clusterEntry.get("proxyId", None)
-                ) or rpc.RpcPeer.generateId()
-
-            if clusterEntry:
-                if (
-                    isClusterAddress(clusterEntry.get("address", None))
-                    and clusterPort == clusterEntry["port"]
-                    and sourceKey != clusterEntry.get("sourceKey", None)
-                ):
-                    clusterEntry = None
-
-            if not clusterEntry:
-                clusterEntry: ClusterObject = {
-                    "id": clusterId,
-                    "proxyId": proxyId,
-                    "address": SCRYPTED_CLUSTER_ADDRESS,
-                    "port": clusterPort,
-                    "sourceKey": sourceKey,
-                }
-                clusterEntry["sha256"] = computeClusterObjectHash(clusterEntry)
-                properties["__cluster"] = clusterEntry
-
-            return proxyId, properties
-
-        self.peer.onProxySerialization = lambda value: onProxySerialization(
-            self.peer, value, None
-        )
-
-        async def resolveObject(id: str, sourceKey: str):
-            sourcePeer: rpc.RpcPeer = (
-                self.peer
-                if not sourceKey
-                else await rpc.maybe_await(clusterPeers.get(sourceKey, None))
-            )
-            if not sourcePeer:
-                return
-            return sourcePeer.localProxyMap.get(id, None)
-
-        clusterPeers: Mapping[str, asyncio.Future[rpc.RpcPeer]] = {}
-
-        def getClusterPeerKey(address: str, port: int):
-            return f"{address}:{port}"
-
-        async def handleClusterClient(
-            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-        ):
-            clusterPeerAddress, clusterPeerPort = writer.get_extra_info("peername")
-            clusterPeerKey = getClusterPeerKey(clusterPeerAddress, clusterPeerPort)
-            rpcTransport = rpc_reader.RpcStreamTransport(reader, writer)
-            peer: rpc.RpcPeer
-            peer, peerReadLoop = await rpc_reader.prepare_peer_readloop(
-                self.loop, rpcTransport
-            )
-            peer.onProxySerialization = lambda value: onProxySerialization(
-                peer, value, clusterPeerKey
-            )
-            future: asyncio.Future[rpc.RpcPeer] = asyncio.Future()
-            future.set_result(peer)
-            clusterPeers[clusterPeerKey] = future
-
-            async def connectRPCObject(o: ClusterObject):
-                sha256 = computeClusterObjectHash(o)
-                if sha256 != o["sha256"]:
-                    raise Exception("secret incorrect")
-                return await resolveObject(o["proxyId"], o.get("sourceKey", None))
-
-            peer.params["connectRPCObject"] = connectRPCObject
-            try:
-                await peerReadLoop()
-            except:
-                pass
-            finally:
-                clusterPeers.pop(clusterPeerKey)
-                peer.kill("cluster client killed")
-                writer.close()
-
-        listenAddress = "0.0.0.0" if SCRYPTED_CLUSTER_ADDRESS else "127.0.0.1"
-        clusterRpcServer = await asyncio.start_server(
-            handleClusterClient, listenAddress, 0
-        )
-        clusterPort = clusterRpcServer.sockets[0].getsockname()[1]
-
-        def ensureClusterPeer(address: str, port: int):
-            if isClusterAddress(address):
-                address = "127.0.0.1"
-            clusterPeerKey = getClusterPeerKey(address, port)
-            clusterPeerPromise = clusterPeers.get(clusterPeerKey)
-            if clusterPeerPromise:
-                return clusterPeerPromise
-
-            async def connectClusterPeer():
-                try:
-                    reader, writer = await asyncio.open_connection(address, port)
-                    sourceAddress, sourcePort = writer.get_extra_info("sockname")
-                    if (
-                        sourceAddress != SCRYPTED_CLUSTER_ADDRESS
-                        and sourceAddress != "127.0.0.1"
-                    ):
-                        print("source address mismatch", sourceAddress)
-                    rpcTransport = rpc_reader.RpcStreamTransport(reader, writer)
-                    clusterPeer, peerReadLoop = await rpc_reader.prepare_peer_readloop(
-                        self.loop, rpcTransport
-                    )
-                    clusterPeer.onProxySerialization = (
-                        lambda value: onProxySerialization(
-                            clusterPeer, value, clusterPeerKey
-                        )
-                    )
-                except:
-                    clusterPeers.pop(clusterPeerKey)
-                    raise
-
-                async def run_loop():
-                    try:
-                        await peerReadLoop()
-                    except:
-                        pass
-                    finally:
-                        clusterPeers.pop(clusterPeerKey)
-
-                asyncio.run_coroutine_threadsafe(run_loop(), self.loop)
-                return clusterPeer
-
-            clusterPeerPromise = self.loop.create_task(connectClusterPeer())
-
-            clusterPeers[clusterPeerKey] = clusterPeerPromise
-            return clusterPeerPromise
-
-        async def connectRPCObject(value):
-            __cluster = getattr(value, "__cluster")
-            if type(__cluster) is not dict:
-                return value
-
-            clusterObject: ClusterObject = __cluster
-
-            if clusterObject.get("id", None) != clusterId:
-                return value
-
-            address = clusterObject.get("address", None)
-            port = clusterObject["port"]
-            proxyId = clusterObject["proxyId"]
-            if port == clusterPort:
-                return await resolveObject(
-                    proxyId, clusterObject.get("sourceKey", None)
-                )
-
-            clusterPeerPromise = ensureClusterPeer(address, port)
-
-            try:
-                clusterPeer = await clusterPeerPromise
-                weakref = clusterPeer.remoteWeakProxies.get(proxyId, None)
-                existing = weakref() if weakref else None
-                if existing:
-                    return existing
-
-                peerConnectRPCObject = clusterPeer.tags.get("connectRPCObject")
-                if not peerConnectRPCObject:
-                    peerConnectRPCObject = await clusterPeer.getParam(
-                        "connectRPCObject"
-                    )
-                    clusterPeer.tags["connectRPCObject"] = peerConnectRPCObject
-                newValue = await peerConnectRPCObject(clusterObject)
-                if not newValue:
-                    raise Exception("rpc object not found?")
-                return newValue
-            except Exception as e:
-                return value
-
-        sdk.connectRPCObject = connectRPCObject
-
-        forkMain = options and options.get("fork")
-        debug = options.get("debug", None)
+        forkMain = zipOptions and zipOptions.get("fork")
+        debug = zipOptions.get("debug", None)
         plugin_volume = pv.ensure_plugin_volume(self.pluginId)
-        plugin_zip_paths = pv.prep(plugin_volume, options.get("zipHash"))
+        zipHash: str = zipOptions.get("zipHash")
+        plugin_zip_paths = pv.prep(plugin_volume, zipHash)
 
         if debug:
             scrypted_volume = pv.get_scrypted_volume()
@@ -846,7 +755,7 @@ class PluginRemote:
 
         if not os.path.exists(zipPath) or debug:
             os.makedirs(os.path.dirname(zipPath), exist_ok=True)
-            zipData = await getZip()
+            zipData = await zipAPI.getZip()
             zipPathTmp = zipPath + ".tmp"
             with open(zipPathTmp, "wb") as f:
                 f.write(zipData)
@@ -860,6 +769,13 @@ class PluginRemote:
 
         if not forkMain:
             multiprocessing.set_start_method("spawn")
+
+        # forkMain may be set to true, but the environment may not be initialized
+        # if the plugin is loaded in another cluster worker.
+        # instead rely on a environemnt variable that will be passed to
+        # child processes.
+        if not os.environ.get("SCRYPTED_PYTHON_INITIALIZED", None):
+            os.environ["SCRYPTED_PYTHON_INITIALIZED"] = "1"
 
             # it's possible to run 32bit docker on aarch64, which cause pip requirements
             # to fail because pip only allows filtering on machine, even if running a different architeture.
@@ -919,7 +835,7 @@ class PluginRemote:
             )
 
             need_pip = False
-            # pip is needed if there's a requiremnts.txt file that has changed.
+            # pip is needed if there's a requirements.txt file that has changed.
             if str_requirements:
                 need_pip = need_requirements(requirements_basename, str_requirements)
             # pip is needed if the base scrypted requirements have changed.
@@ -955,29 +871,155 @@ class PluginRemote:
                 print("requirements.txt (up to date)")
                 print(str_requirements)
 
-            sys.path.insert(0, plugin_zip_paths.get("unzipped_path"))
-            sys.path.insert(0, pip_target)
+            sys.path.append(plugin_zip_paths.get("unzipped_path"))
+            sys.path.append(pip_target)
 
         self.systemManager = SystemManager(self.api, self.systemState)
         self.deviceManager = DeviceManager(self.nativeIds, self.systemManager)
         self.mediaManager = MediaManager(await self.api.getMediaManager())
-
-        await self.start_stats_runner()
+        self.clusterManager = ClusterManager(self)
 
         try:
-            from scrypted_sdk import sdk_init2  # type: ignore
-
             sdk.systemManager = self.systemManager
             sdk.deviceManager = self.deviceManager
             sdk.mediaManager = self.mediaManager
+            sdk.clusterManager = self.clusterManager
             sdk.remote = self
             sdk.api = self.api
             sdk.zip = zip
 
-            def host_fork() -> PluginFork:
+            def host_fork(options: dict = None) -> PluginFork:
+                async def finishFork(forkPeer: rpc.RpcPeer):
+                    getRemote = await forkPeer.getParam("getRemote")
+                    remote: PluginRemote = await getRemote(
+                        self.api, self.pluginId, self.hostInfo
+                    )
+                    await remote.setSystemState(self.systemManager.getSystemState())
+                    for nativeId, ds in self.nativeIds.items():
+                        await remote.setNativeId(nativeId, ds.id, ds.storage)
+                    forkOptions = zipOptions.copy()
+                    forkOptions["fork"] = True
+                    forkOptions["debug"] = debug
+
+                    class PluginZipAPI:
+
+                        async def getZip(self):
+                            return await zipAPI.getZip()
+
+                    return await remote.loadZip(
+                        packageJson, PluginZipAPI(), forkOptions
+                    )
+
+                if cluster_labels.needs_cluster_fork_worker(options):
+                    peerLiveness = PeerLiveness(self.loop)
+
+                    async def getClusterFork():
+                        runtimeWorkerOptions = {
+                            "packageJson": packageJson,
+                            "env": None,
+                            "pluginDebug": None,
+                            "zipFile": None,
+                            "unzippedPath": None,
+                            "zipHash": zipHash,
+                        }
+
+                        forkComponent = await self.api.getComponent("cluster-fork")
+                        sanitizedOptions = options.copy()
+                        sanitizedOptions["runtime"] = sanitizedOptions.get(
+                            "runtime", "python"
+                        )
+                        sanitizedOptions["zipHash"] = zipHash
+                        clusterForkResult = await forkComponent.fork(
+                            runtimeWorkerOptions,
+                            sanitizedOptions,
+                            peerLiveness,
+                            lambda: zipAPI.getZip(),
+                        )
+
+                        async def waitClusterForkKilled():
+                            try:
+                                await clusterForkResult.waitKilled()
+                            except:
+                                pass
+                            safe_set_result(peerLiveness.killed, None)
+
+                        asyncio.ensure_future(waitClusterForkKilled(), loop=self.loop)
+
+                        clusterGetRemote = await self.clusterSetup.connectRPCObject(
+                            await clusterForkResult.getResult()
+                        )
+                        remoteDict = await clusterGetRemote()
+                        asyncio.ensure_future(
+                            plugin_console.writeWorkerGenerator(
+                                remoteDict["stdout"], sys.stdout
+                            )
+                        )
+                        asyncio.ensure_future(
+                            plugin_console.writeWorkerGenerator(
+                                remoteDict["stderr"], sys.stderr
+                            )
+                        )
+
+                        getRemote = remoteDict["getRemote"]
+                        directGetRemote = await self.clusterSetup.connectRPCObject(
+                            getRemote
+                        )
+                        if directGetRemote is getRemote:
+                            raise Exception("cluster fork peer not direct connected")
+
+                        forkPeer = getattr(
+                            directGetRemote, rpc.RpcPeer.PROPERTY_PROXY_PEER
+                        )
+                        return await finishFork(forkPeer)
+
+                    async def getClusterForkWrapped():
+                        try:
+                            return await getClusterFork()
+                        except:
+                            safe_set_result(peerLiveness.killed, None)
+                            raise
+
+                    pluginFork = PluginFork()
+                    pluginFork.result = asyncio.create_task(getClusterForkWrapped())
+
+                    async def waitKilled():
+                        await peerLiveness.killed
+
+                    pluginFork.exit = asyncio.create_task(waitKilled())
+
+                    def terminate():
+                        safe_set_result(peerLiveness.killed, None)
+                        pluginFork.worker.terminate()
+
+                    pluginFork.terminate = terminate
+
+                    pluginFork.worker = None
+
+                    return pluginFork
+
+                if options:
+                    runtime = options.get("runtime", None)
+                    if runtime and runtime != "python":
+                        raise Exception("cross runtime fork not supported")
+                    if options.get("filename", None):
+                        raise Exception("python fork to filename not supported")
+
                 parent_conn, child_conn = multiprocessing.Pipe()
+
                 pluginFork = PluginFork()
-                print("new fork")
+                killed = Future(loop=self.loop)
+
+                async def waitKilled():
+                    await killed
+
+                pluginFork.exit = asyncio.create_task(waitKilled())
+
+                def terminate():
+                    safe_set_result(killed, None)
+                    pluginFork.worker.kill()
+
+                pluginFork.terminate = terminate
+
                 pluginFork.worker = multiprocessing.Process(
                     target=plugin_fork, args=(child_conn,), daemon=True
                 )
@@ -986,6 +1028,7 @@ class PluginRemote:
                 def schedule_exit_check():
                     def exit_check():
                         if pluginFork.worker.exitcode != None:
+                            safe_set_result(killed, None)
                             pluginFork.worker.join()
                         else:
                             schedule_exit_check()
@@ -1001,12 +1044,6 @@ class PluginRemote:
                     )
                     forkPeer.peerName = "thread"
 
-                    async def updateStats(stats):
-                        self.ptimeSum += stats["cpu"]["user"]
-                        self.allMemoryStats[forkPeer] = stats
-
-                    forkPeer.params["updateStats"] = updateStats
-
                     async def forkReadLoop():
                         try:
                             await readLoop()
@@ -1014,29 +1051,21 @@ class PluginRemote:
                             # traceback.print_exc()
                             print("fork read loop exited")
                         finally:
-                            self.allMemoryStats.pop(forkPeer)
                             parent_conn.close()
                             rpcTransport.executor.shutdown()
-                            pluginFork.worker.kill()
+                            pluginFork.terminate()
 
                     asyncio.run_coroutine_threadsafe(forkReadLoop(), loop=self.loop)
-                    getRemote = await forkPeer.getParam("getRemote")
-                    remote: PluginRemote = await getRemote(
-                        self.api, self.pluginId, self.hostInfo
-                    )
-                    await remote.setSystemState(self.systemManager.getSystemState())
-                    for nativeId, ds in self.nativeIds.items():
-                        await remote.setNativeId(nativeId, ds.id, ds.storage)
-                    forkOptions = options.copy()
-                    forkOptions["fork"] = True
-                    forkOptions["debug"] = debug
-                    return await remote.loadZip(packageJson, getZip, forkOptions)
+
+                    return await finishFork(forkPeer)
 
                 pluginFork.result = asyncio.create_task(getFork())
                 return pluginFork
 
             sdk.fork = host_fork
             # sdk.
+
+            from scrypted_sdk import sdk_init2  # type: ignore
 
             sdk_init2(sdk)
         except:
@@ -1119,55 +1148,8 @@ class PluginRemote:
                 raise Exception("REPL unavailable: Plugin not loaded.")
             if self.replPort == 0:
                 raise Exception("REPL unavailable: Python REPL not available.")
-            return self.replPort
+            return [self.replPort, os.getenv("SCRYPTED_CLUSTER_ADDRESS", None)]
         raise Exception(f"unknown service {name}")
-
-    async def start_stats_runner(self):
-        pong = None
-
-        async def ping(time: int):
-            nonlocal pong
-            pong = pong or await self.peer.getParam("pong")
-            await pong(time)
-
-        self.peer.params["ping"] = ping
-
-        update_stats = await self.peer.getParam("updateStats")
-        if not update_stats:
-            print("host did not provide update_stats")
-            return
-
-        def stats_runner():
-            ptime = round(time.process_time() * 1000000) + self.ptimeSum
-            try:
-                import psutil
-
-                process = psutil.Process(os.getpid())
-                heapTotal = process.memory_info().rss
-            except:
-                try:
-                    import resource
-
-                    heapTotal = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                except:
-                    heapTotal = 0
-
-            for _, stats in self.allMemoryStats.items():
-                heapTotal += stats["memoryUsage"]["heapTotal"]
-
-            stats = {
-                "cpu": {
-                    "user": ptime,
-                    "system": 0,
-                },
-                "memoryUsage": {
-                    "heapTotal": heapTotal,
-                },
-            }
-            asyncio.run_coroutine_threadsafe(update_stats(stats), self.loop)
-            self.loop.call_later(10, stats_runner)
-
-        stats_runner()
 
 
 async def plugin_async_main(
@@ -1175,8 +1157,19 @@ async def plugin_async_main(
 ):
     peer, readLoop = await rpc_reader.prepare_peer_readloop(loop, rpcTransport)
     peer.params["print"] = print
+
+    clusterSetup = ClusterSetup(loop, peer)
+    peer.params["initializeCluster"] = lambda options: clusterSetup.initializeCluster(
+        options
+    )
+
+    async def ping(time: int):
+        return time
+
+    peer.params["ping"] = ping
+
     peer.params["getRemote"] = lambda api, pluginId, hostInfo: PluginRemote(
-        peer, api, pluginId, hostInfo, loop
+        clusterSetup, api, pluginId, hostInfo, loop
     )
 
     try:
@@ -1198,47 +1191,9 @@ def main(rpcTransport: rpc_reader.RpcTransport):
     loop.close()
 
 
-def plugin_main(rpcTransport: rpc_reader.RpcTransport):
-    if True:
-        main(rpcTransport)
-        return
-
-    # 03/05/2024
-    # Not sure why this code below was necessary. I thought it was gstreamer needing to
-    # be initialized on the main thread, but that no longer seems to be the case.
-
-    # gi import will fail on windows (and posisbly elsewhere)
-    # if it does, try starting without it.
-    try:
-        import gi
-
-        gi.require_version("Gst", "1.0")
-        from gi.repository import GLib, Gst
-
-        Gst.init(None)
-
-        # can't remember why starting the glib main loop is necessary.
-        # maybe gstreamer on linux and other things needed it?
-        # seems optional on other platforms.
-        loop = GLib.MainLoop()
-
-        worker = threading.Thread(
-            target=main, args=(rpcTransport,), name="asyncio-main"
-        )
-        worker.start()
-
-        loop.run()
-        return
-    except:
-        pass
-
-    # reattempt without gi outside of the exception handler in case the plugin fails.
-    main(rpcTransport)
-
-
 def plugin_fork(conn: multiprocessing.connection.Connection):
-    plugin_main(rpc_reader.RpcConnectionTransport(conn))
+    main(rpc_reader.RpcConnectionTransport(conn))
 
 
 if __name__ == "__main__":
-    plugin_main(rpc_reader.RpcFileTransport(3, 4))
+    main(rpc_reader.RpcFileTransport(3, 4))

@@ -1,5 +1,5 @@
 import type { Device, DeviceManifest, EventDetails, EventListenerOptions, EventListenerRegister, MediaManager, MediaObject, ScryptedDevice, ScryptedInterfaceDescriptor, ScryptedInterfaceProperty, ScryptedNativeId, SystemDeviceState } from '@scrypted/types';
-import { AccessControls } from './acl';
+import type { AccessControls } from './acl';
 
 export interface PluginLogger {
     log(level: string, message: string): Promise<void>;
@@ -164,11 +164,19 @@ export interface PluginRemoteLoadZipOptions {
     main?: string;
 
     clusterId: string;
+    clusterWorkerId: string;
     clusterSecret: string;
 }
 
+export class PluginZipAPI {
+    constructor(
+        public getZip: () => Promise<Buffer>
+    ) {
+    }
+}
+
 export interface PluginRemote {
-    loadZip(packageJson: any, getZip: () => Promise<Buffer>, options: PluginRemoteLoadZipOptions): Promise<any>;
+    loadZip(packageJson: any, zipAPI: PluginZipAPI, options: PluginRemoteLoadZipOptions): Promise<any>;
     setSystemState(state: { [id: string]: { [property: string]: SystemDeviceState } }): Promise<void>;
     setNativeId(nativeId: ScryptedNativeId, id: string, storage: { [key: string]: any }): Promise<void>;
     updateDeviceState(id: string, state: { [property: string]: SystemDeviceState }): Promise<void>;
@@ -182,7 +190,7 @@ export interface PluginRemote {
 
     createDeviceState(id: string, setState: (property: string, value: any) => Promise<any>): Promise<any>;
 
-    getServicePort(name: string, ...args: any[]): Promise<number>;
+    getServicePort(name: string, ...args: any[]): Promise<[number, string]>;
 }
 
 export interface MediaObjectRemote extends MediaObject {

@@ -27,12 +27,13 @@ export interface DevInfo {
     wifi: number;
 }
 
-async function getDeviceInfo(host: string, username: string, password: string): Promise<DevInfo> {
+async function getDeviceInfoInternal(host: string, parameters: Record<string, string>): Promise<DevInfo> {
     const url = new URL(`http://${host}/api.cgi`);
     const params = url.searchParams;
     params.set('cmd', 'GetDevInfo');
-    params.set('user', username);
-    params.set('password', password);
+    for (const [key, value] of Object.entries(parameters)) {
+        params.set(key, value);
+    }
 
     const response = await httpFetch({
         url,
@@ -43,13 +44,24 @@ async function getDeviceInfo(host: string, username: string, password: string): 
     if (error)
         throw new Error('error during call to getDeviceInfo');
 
-    return response.body?.[0]?.value?.DevInfo;
+    const ret: DevInfo = response.body?.[0]?.value?.DevInfo;
+    if (!ret?.type && !ret?.model && !ret?.exactType)
+        throw new Error('device info return unexpected data');
+    return ret;
+}
+
+export async function getDeviceInfo(host: string, username: string, password: string): Promise<DevInfo> {
+    const parameters = await getLoginParameters(host, username, password);
+    return getDeviceInfoInternal(host, parameters.parameters);
 }
 
 export async function getLoginParameters(host: string, username: string, password: string, forceToken?: boolean) {
     if (!forceToken) {
         try {
-            await getDeviceInfo(host, username, password);
+            await getDeviceInfoInternal(host, {
+                user: username,
+                password,
+            });
             return {
                 parameters: {
                     user: username,

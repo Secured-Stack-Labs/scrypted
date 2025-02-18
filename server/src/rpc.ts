@@ -117,7 +117,7 @@ class RpcProxy implements PrimitiveProxyHandler<any> {
             return this.entry.id;
         if (p === '__proxy_constructor')
             return this.constructorName;
-        if (p === '__proxy_peer')
+        if (p === RpcPeer.PROPERTY_PROXY_PEER)
             return this.peer;
         if (p === RpcPeer.PROPERTY_PROXY_PROPERTIES)
             return this.proxyProps;
@@ -211,7 +211,7 @@ class RpcProxy implements PrimitiveProxyHandler<any> {
                 if (e.name === 'StopAsyncIteration') {
                     return {
                         done: true,
-                        value: undefined,
+                        value: undefined as any,
                     }
                 }
                 throw e;
@@ -300,6 +300,7 @@ export class RpcPeer {
     constructorSerializerMap = new Map<any, string>();
     transportSafeArgumentTypes = RpcPeer.getDefaultTransportSafeArgumentTypes();
     killed: Promise<string>;
+    killedSafe: Promise<void>;
     killedDeferred: Deferred;
     tags: any = {};
     yieldedAsyncIterators = new Set<AsyncGenerator>();
@@ -374,6 +375,7 @@ export class RpcPeer {
     static readonly RANDOM_DIGITS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     static readonly RPC_RESULT_ERROR_NAME = 'RPCResultError';
     static readonly PROPERTY_PROXY_ID = '__proxy_id';
+    static readonly PROPERTY_PROXY_PEER = '__proxy_peer';
     static readonly PROPERTY_PROXY_ONEWAY_METHODS = '__proxy_oneway_methods';
     static readonly PROPERTY_JSON_DISABLE_SERIALIZATION = '__json_disable_serialization';
     static readonly PROPERTY_PROXY_PROPERTIES = '__proxy_props';
@@ -383,7 +385,7 @@ export class RpcPeer {
         'constructor',
         '__proxy_id',
         '__proxy_constructor',
-        '__proxy_peer',
+        RpcPeer.PROPERTY_PROXY_PEER,
         RpcPeer.PROPERTY_PROXY_ONEWAY_METHODS,
         RpcPeer.PROPERTY_JSON_DISABLE_SERIALIZATION,
         RpcPeer.PROPERTY_PROXY_PROPERTIES,
@@ -394,6 +396,7 @@ export class RpcPeer {
         this.killed = new Promise<string>((resolve, reject) => {
             this.killedDeferred = { resolve, reject, method: undefined };
         }).catch(e => e.message || 'Unknown Error');
+        this.killedSafe = this.killed.then(() => { }).catch(() => { });
     }
 
     static isTransportSafe(value: any) {
@@ -494,6 +497,14 @@ export class RpcPeer {
 
         const copySerializeChildren = value[RpcPeer.PROPERTY_JSON_COPY_SERIALIZE_CHILDREN];
         if (copySerializeChildren) {
+            if (Array.isArray(copySerializeChildren)) {
+                const array = [];
+                for (const val of copySerializeChildren) {
+                    array.push(this.deserialize(val, deserializationContext));
+                }
+                return array;
+            }
+
             const ret: any = {};
             for (const [key, val] of Object.entries(value)) {
                 ret[key] = this.deserialize(val, deserializationContext);
@@ -558,6 +569,17 @@ export class RpcPeer {
 
     serialize(value: any, serializationContext: any): any {
         if (value?.[RpcPeer.PROPERTY_JSON_COPY_SERIALIZE_CHILDREN] === true) {
+            if (Array.isArray(value)) {
+                const array = [];
+                for (const val of value) {
+                    array.push(this.serialize(val, serializationContext));
+                }
+
+                return {
+                    [RpcPeer.PROPERTY_JSON_COPY_SERIALIZE_CHILDREN]: array,
+                };
+            }
+
             const ret: any = {};
             for (const [key, val] of Object.entries(value)) {
                 ret[key] = this.serialize(val, serializationContext);

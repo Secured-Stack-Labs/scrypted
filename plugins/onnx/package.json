@@ -35,12 +35,18 @@
       "interfaces": [
          "DeviceProvider",
          "Settings",
+         "ClusterForkInterface",
          "ObjectDetection",
          "ObjectDetectionPreview"
-      ]
+      ],
+      "labels": {
+         "require": [
+            "@scrypted/onnx"
+         ]
+      }
    },
    "devDependencies": {
       "@scrypted/sdk": "file:../../sdk"
    },
-   "version": "0.1.117"
+   "version": "0.1.120"
 }

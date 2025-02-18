@@ -130,7 +130,6 @@ export class PluginHostAPI extends PluginAPIManagedListeners implements PluginAP
         const device = this.scrypted.findPluginDevice(this.pluginId, nativeId)
         device.storage = storage;
         this.scrypted.datastore.upsert(device);
-        this.scrypted.stateManager.notifyInterfaceEvent(device, 'Storage', undefined);
     }
 
     async onDevicesChanged(deviceManifest: DeviceManifest) {
@@ -186,7 +185,7 @@ export class PluginHostAPI extends PluginAPIManagedListeners implements PluginAP
 
     async requestRestart() {
         const logger = await this.getLogger(undefined);
-        logger.log('i', 'plugin restart was requested');
+        logger?.log('i', 'plugin restart was requested');
         return this.restartDebounced();
     }
 

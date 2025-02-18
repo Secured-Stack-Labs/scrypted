@@ -35,17 +35,18 @@
       "interfaces": [
          "Settings",
          "DeviceProvider",
+         "ClusterForkInterface",
          "ObjectDetection",
          "ObjectDetectionPreview"
       ],
       "labels": {
          "require": [
-            "darwin"
+            "@scrypted/coreml"
          ]
       }
    },
    "devDependencies": {
       "@scrypted/sdk": "file:../../sdk"
    },
-   "version": "0.1.74"
+   "version": "0.1.77"
 }

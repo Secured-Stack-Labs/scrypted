@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from 'path';
-import stringifyObject from 'stringify-object';
-import { DeclarationReflection, ProjectReflection, ReflectionKind } from 'typedoc';
+import { ArrayType, DeclarationReflection, InferredType, LiteralType, ProjectReflection, ReferenceType, ReflectionKind, SomeType, Type } from 'typedoc';
 import { ScryptedInterface, ScryptedInterfaceDescriptor } from "./types.input";
 
 const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '../gen/schema.json')).toString()) as ProjectReflection;
@@ -11,14 +10,19 @@ const ScryptedInterfaceDescriptors: { [scryptedInterface: string]: ScryptedInter
 
 const allProperties: { [property: string]: DeclarationReflection } = {};
 
-function toTypescriptType(type: any): string {
+function toTypescriptType(type: SomeType ): string {
     if (type.type === 'literal')
         return `'${type.value}'`;
     if (type.type === 'array')
         return `${toTypescriptType(type.elementType)}[]`;
     if (type.type === 'union')
         return type.types.map((type: any) => toTypescriptType(type)).join(' | ')
-    return type.name;
+    if (type.type === 'reference') {
+        if (type.typeArguments)
+            return `${type.name}<${type.typeArguments.map((t: any) => toTypescriptType(t)).join(', ')}>`;
+        return type.name;
+    }
+    return (type as any).name;
 }
 
 for (const name of Object.values(ScryptedInterface)) {
@@ -42,11 +46,11 @@ const methods = Object.values(ScryptedInterfaceDescriptors).map(d => d.methods).
 
 const deviceStateContents = `
 export interface DeviceState {
-${Object.entries(allProperties).map(([property, { type, flags }]) => `  ${property}${flags.isOptional ? '?' : ''}: ${toTypescriptType(type)}`).join('\n')};
+${Object.entries(allProperties).map(([property, { type, flags }]) => `  ${property}${flags.isOptional ? '?' : ''}: ${toTypescriptType(type!)}`).join('\n')};
 }
 
 export class DeviceBase implements DeviceState {
-${Object.entries(allProperties).map(([property, { type, flags }]) => `  ${property}${flags.isOptional ? '?' : '!'}: ${toTypescriptType(type)}`).join('\n')};
+${Object.entries(allProperties).map(([property, { type, flags }]) => `  ${property}${flags.isOptional ? '?' : '!'}: ${toTypescriptType(type!)}`).join('\n')};
 }
 `;
 
@@ -69,7 +73,7 @@ ${deviceStateContents}
 ${propertyContents}
 ${methodContents}
 
-export const ScryptedInterfaceDescriptors: { [scryptedInterface: string]: ScryptedInterfaceDescriptor } = ${stringifyObject(ScryptedInterfaceDescriptors, { indent: '  ' })}
+export const ScryptedInterfaceDescriptors: { [scryptedInterface: string]: ScryptedInterfaceDescriptor } = ${JSON.stringify(ScryptedInterfaceDescriptors, undefined, 2)};
 
 ${fs.readFileSync(path.join(__dirname, './types.input.ts'))}
 `;
@@ -95,6 +99,8 @@ function toPythonType(type: any): string {
         return type.types.map((type: any) => toPythonType(type)).join(' | ')
     if (type.name === 'AsyncGenerator')
         return `AsyncGenerator[${toPythonType(type.typeArguments[0])}, None]`;
+    if (type.name === 'Record')
+        return `Mapping[${toPythonType(type.typeArguments[0])}, ${toPythonType(type.typeArguments[1])}]`;
     type = type.typeArguments?.[0]?.name || type.name || type;
     if (parameterTypes.has(type))
         return 'Any';
@@ -149,9 +155,12 @@ function selfSignature(method: any) {
 
 const enums = schema.children?.filter((child) => child.kind === ReflectionKind.Enum) ?? [];
 const interfaces = schema.children?.filter((child: any) => Object.values(ScryptedInterface).includes(child.name)) ?? [];
-let python = '';
+let python = `
+TYPES_VERSION = "${typesVersion}"
 
-for (const iface of ['Logger', 'DeviceManager', 'SystemManager', 'MediaManager', 'EndpointManager']) {
+`;
+
+for (const iface of ['Logger', 'DeviceManager', 'SystemManager', 'MediaManager', 'EndpointManager', 'ClusterManager']) {
     const child = schema.children?.find((child: any) => child.name === iface);
 
     if (child)
@@ -344,9 +353,9 @@ ${toDocstring(td)}
 const pythonTypes = `from __future__ import annotations
 from enum import Enum
 try:
-    from typing import TypedDict
+    from typing import TypedDict, Mapping
 except:
-    from typing_extensions import TypedDict
+    from typing_extensions import TypedDict, Mapping
 from typing import Union, Any, AsyncGenerator
 
 from .other import *

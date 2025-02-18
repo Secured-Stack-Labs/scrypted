@@ -46,12 +46,18 @@
       "type": "API",
       "interfaces": [
          "Settings",
+         "ClusterForkInterface",
          "ObjectDetection",
          "ObjectDetectionPreview"
-      ]
+      ],
+      "labels": {
+         "require": [
+            "@scrypted/tensorflow-lite"
+         ]
+      }
    },
    "devDependencies": {
       "@scrypted/sdk": "file:../../sdk"
    },
-   "version": "0.1.66"
+   "version": "0.1.78"
 }

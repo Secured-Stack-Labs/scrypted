@@ -25,12 +25,22 @@ try:
 except:
     OpenVINOTextRecognition = None
 
-predictExecutor = concurrent.futures.ThreadPoolExecutor(1, "OpenVINO-Predict")
-prepareExecutor = concurrent.futures.ThreadPoolExecutor(1, "OpenVINO-Prepare")
+predictExecutor = concurrent.futures.ThreadPoolExecutor(
+    thread_name_prefix="OpenVINO-Predict"
+)
+prepareExecutor = concurrent.futures.ThreadPoolExecutor(
+    thread_name_prefix="OpenVINO-Prepare"
+)
 
 availableModels = [
     "Default",
     "scrypted_yolov9c_relu_int8_320",
+    "scrypted_yolov9s_relu_int8_320",
+    "scrypted_yolov9t_relu_int8_320",
+    "scrypted_yolov9c_int8_320",
+    "scrypted_yolov9m_int8_320",
+    "scrypted_yolov9s_int8_320",
+    "scrypted_yolov9t_int8_320",
     "scrypted_yolov10m_320",
     "scrypted_yolov10s_320",
     "scrypted_yolov10n_320",
@@ -42,10 +52,6 @@ availableModels = [
     "scrypted_yolov9s_320",
     "scrypted_yolov9t_320",
     "scrypted_yolov8n_320",
-    "ssd_mobilenet_v1_coco",
-    "ssdlite_mobilenet_v2",
-    "yolo-v3-tiny-tf",
-    "yolo-v4-tiny-tf",
 ]
 
 
@@ -95,8 +101,8 @@ class OpenVINOPlugin(
     scrypted_sdk.Settings,
     scrypted_sdk.DeviceProvider,
 ):
-    def __init__(self, nativeId: str | None = None):
-        super().__init__(nativeId=nativeId)
+    def __init__(self, nativeId: str | None = None, forked: bool = False):
+        super().__init__(nativeId=nativeId, forked=forked)
 
         self.core = ov.Core()
         dump_device_properties(self.core)
@@ -131,6 +137,8 @@ class OpenVINOPlugin(
             except:
                 pass
 
+        # AUTO mode can cause conflicts or hide errors with NPU and GPU
+        # so try to be explicit and fall back accordingly.
         mode = self.storage.getItem("mode") or "Default"
         if mode == "Default":
             mode = "AUTO"
@@ -155,14 +163,18 @@ class OpenVINOPlugin(
 
         model = self.storage.getItem("model") or "Default"
         if model == "Default" or model not in availableModels:
+            # relu + int8 wins out by a mile on gpu and npu.
+            # observation is that silu + float is faster than silu + int8 on gpu.
+            # possibly due to quantization causing complexity at the activation function?
+            # however, silu + int8 is faster than silu + float on cpu. (tested on wyse 5070)
             if model != "Default":
                 self.storage.setItem("model", "Default")
             if arc or nvidia or npu:
-                model = "scrypted_yolov9c_320"
+                model = "scrypted_yolov9c_relu_int8_320"
             elif iris_xe:
-                model = "scrypted_yolov9s_320"
+                model = "scrypted_yolov9s_relu_int8_320"
             else:
-                model = "scrypted_yolov9t_320"
+                model = "scrypted_yolov9t_relu_int8_320"
         self.yolo = "yolo" in model
         self.scrypted_yolov9 = "scrypted_yolov9" in model
         self.scrypted_yolov10 = "scrypted_yolov10" in model
@@ -173,14 +185,18 @@ class OpenVINOPlugin(
         self.sigmoid = model == "yolo-v4-tiny-tf"
         self.modelName = model
 
-        ovmodel = "best-converted" if self.scrypted_yolov9 else "best" if self.scrypted_model else model
+        ovmodel = (
+            "best-converted"
+            if self.scrypted_yolov9
+            else "best" if self.scrypted_model else model
+        )
 
         model_version = "v7"
         xmlFile = self.downloadFile(
             f"https://github.com/koush/openvino-models/raw/main/{model}/{precision}/{ovmodel}.xml",
             f"{model_version}/{model}/{precision}/{ovmodel}.xml",
         )
-        binFile = self.downloadFile(
+        self.downloadFile(
             f"https://github.com/koush/openvino-models/raw/main/{model}/{precision}/{ovmodel}.bin",
             f"{model_version}/{model}/{precision}/{ovmodel}.bin",
         )
@@ -205,8 +221,6 @@ class OpenVINOPlugin(
                 "coco_labels.txt",
             )
 
-        print(xmlFile, binFile, labelsFile)
-
         try:
             self.compiled_model = self.core.compile_model(xmlFile, mode)
         except:
@@ -227,11 +241,50 @@ class OpenVINOPlugin(
                     self.storage.removeItem("precision")
                     self.requestRestart()
 
+        self.infer_queue = ov.AsyncInferQueue(self.compiled_model)
+
+        def predict(output):
+            if not self.yolo:
+                objs = []
+                for values in output[0][0]:
+                    valid, index, confidence, l, t, r, b = values
+                    if valid == -1:
+                        break
+
+                    def torelative(value: float):
+                        return value * self.model_dim
+
+                    l = torelative(l)
+                    t = torelative(t)
+                    r = torelative(r)
+                    b = torelative(b)
+
+                    obj = Prediction(index - 1, confidence, Rectangle(l, t, r, b))
+                    objs.append(obj)
+
+                return objs
+
+            if self.scrypted_yolov10:
+                return yolo.parse_yolov10(output[0])
+            if self.scrypted_yolo_nas:
+                return yolo.parse_yolo_nas([output[1], output[0]])
+            return yolo.parse_yolov9(output[0])
+
+        def callback(infer_request, future: asyncio.Future):
+            try:
+                output = infer_request.get_output_tensor(0).data
+                objs = predict(output)
+                self.loop.call_soon_threadsafe(future.set_result, objs)
+            except Exception as e:
+                self.loop.call_soon_threadsafe(future.set_exception, e)
+
+        self.infer_queue.set_callback(callback)
+
         print(
             "EXECUTION_DEVICES",
             self.compiled_model.get_property("EXECUTION_DEVICES"),
         )
-        print(f"model/mode/precision: {model}/{mode}/{precision}")
+        print(f"model/mode: {model}/{mode}")
 
         # mobilenet 1,300,300,3
         # yolov3/4 1,416,416,3
@@ -244,7 +297,9 @@ class OpenVINOPlugin(
 
         self.faceDevice = None
         self.textDevice = None
-        asyncio.ensure_future(self.prepareRecognitionModels(), loop=self.loop)
+
+        if not self.forked:
+            asyncio.ensure_future(self.prepareRecognitionModels(), loop=self.loop)
 
     async def getSettings(self) -> list[Setting]:
         mode = self.storage.getItem("mode") or "Default"
@@ -298,69 +353,6 @@ class OpenVINOPlugin(
         return super().get_input_format()
 
     async def detect_once(self, input: Image.Image, settings: Any, src_size, cvss):
-        def predict(input_tensor):
-            infer_request = self.compiled_model.create_infer_request()
-            infer_request.set_input_tensor(input_tensor)
-            output_tensors = infer_request.infer()
-
-            objs = []
-
-            if self.scrypted_yolo:
-                if self.scrypted_yolov10:
-                    return yolo.parse_yolov10(output_tensors[0][0])
-                if self.scrypted_yolo_nas:
-                    return yolo.parse_yolo_nas([output_tensors[1], output_tensors[0]])
-                return yolo.parse_yolov9(output_tensors[0][0])
-
-            if self.yolo:
-                # index 2 will always either be 13 or 26
-                # index 1 may be 13/26 or 255 depending on yolo 3 vs 4
-                if infer_request.outputs[0].data.shape[2] == 13:
-                    out_blob = infer_request.outputs[0]
-                else:
-                    out_blob = infer_request.outputs[1]
-
-                # 13 13
-                objects = yolo.parse_yolo_region(
-                    out_blob.data,
-                    (input.width, input.height),
-                    (81, 82, 135, 169, 344, 319),
-                    self.sigmoid,
-                )
-
-                for r in objects:
-                    obj = Prediction(
-                        r["classId"],
-                        r["confidence"],
-                        Rectangle(r["xmin"], r["ymin"], r["xmax"], r["ymax"]),
-                    )
-                    objs.append(obj)
-
-                # what about output[1]?
-                # 26 26
-                # objects = yolo.parse_yolo_region(out_blob, (input.width, input.height), (,27, 37,58, 81,82))
-
-                return objs
-
-            output = infer_request.get_output_tensor(0)
-            for values in output.data[0][0]:
-                valid, index, confidence, l, t, r, b = values
-                if valid == -1:
-                    break
-
-                def torelative(value: float):
-                    return value * self.model_dim
-
-                l = torelative(l)
-                t = torelative(t)
-                r = torelative(r)
-                b = torelative(b)
-
-                obj = Prediction(index - 1, confidence, Rectangle(l, t, r, b))
-                objs.append(obj)
-
-            return objs
-
         def prepare():
             # the input_tensor can be created with the shared_memory=True parameter,
             # but that seems to cause issues on some platforms.
@@ -381,23 +373,19 @@ class OpenVINOPlugin(
                         im = im.reshape((1, 3, self.model_dim, self.model_dim))
                 im = im.astype(np.float32) / 255.0
                 im = np.ascontiguousarray(im)  # contiguous
-                input_tensor = ov.Tensor(array=im)
             elif self.yolo:
-                input_tensor = ov.Tensor(
-                    array=np.expand_dims(np.array(input), axis=0).astype(np.float32)
-                )
+                im = np.expand_dims(np.array(input), axis=0).astype(np.float32)
             else:
-                input_tensor = ov.Tensor(array=np.expand_dims(np.array(input), axis=0))
-            return input_tensor
+                im = np.expand_dims(np.array(input), axis=0)
+            return im
 
         try:
             input_tensor = await asyncio.get_event_loop().run_in_executor(
                 prepareExecutor, lambda: prepare()
             )
-            objs = await asyncio.get_event_loop().run_in_executor(
-                predictExecutor, lambda: predict(input_tensor)
-            )
-
+            f = asyncio.Future(loop=self.loop)
+            self.infer_queue.start_async(input_tensor, f)
+            objs = await f
         except:
             traceback.print_exc()
             raise
@@ -412,6 +400,7 @@ class OpenVINOPlugin(
                     "nativeId": "facerecognition",
                     "type": scrypted_sdk.ScryptedDeviceType.Builtin.value,
                     "interfaces": [
+                        scrypted_sdk.ScryptedInterface.ClusterForkInterface.value,
                         scrypted_sdk.ScryptedInterface.ObjectDetection.value,
                     ],
                     "name": "OpenVINO Face Recognition",
@@ -424,6 +413,7 @@ class OpenVINOPlugin(
                         "nativeId": "textrecognition",
                         "type": scrypted_sdk.ScryptedDeviceType.Builtin.value,
                         "interfaces": [
+                            scrypted_sdk.ScryptedInterface.ClusterForkInterface.value,
                             scrypted_sdk.ScryptedInterface.ObjectDetection.value,
                         ],
                         "name": "OpenVINO Text Recognition",

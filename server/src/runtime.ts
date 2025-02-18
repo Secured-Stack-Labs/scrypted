@@ -37,12 +37,16 @@ import { getIpAddress, SCRYPTED_INSECURE_PORT, SCRYPTED_SECURE_PORT } from './se
 import { AddressSettings } from './services/addresses';
 import { Alerts } from './services/alerts';
 import { Backup } from './services/backup';
+import { ClusterForkService } from './services/cluster-fork';
 import { CORSControl } from './services/cors';
 import { Info } from './services/info';
 import { getNpmPackageInfo, PluginComponent } from './services/plugin';
 import { ServiceControl } from './services/service-control';
 import { UsersService } from './services/users';
 import { getState, ScryptedStateManager, setState } from './state';
+import { isClusterAddress } from './cluster/cluster-setup';
+import { RunningClusterWorker } from './scrypted-cluster-main';
+import { EnvControl } from './services/env';
 
 interface DeviceProxyPair {
     handler: PluginDeviceProxyHandler;
@@ -59,7 +63,9 @@ interface HttpPluginData {
 
 export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
     clusterId = crypto.randomBytes(3).toString('hex');
-    clusterSecret = crypto.randomBytes(16).toString('hex');
+    clusterSecret = process.env.SCRYPTED_CLUSTER_SECRET || crypto.randomBytes(16).toString('hex');
+    clusterWorkers = new Map<string, RunningClusterWorker>();
+    serverClusterWorkerId: string;
     plugins: { [id: string]: PluginHost } = {};
     pluginDevices: { [id: string]: PluginDevice } = {};
     devices: { [id: string]: DeviceProxyPair } = {};
@@ -80,11 +86,13 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
         },
     });
     pluginComponent = new PluginComponent(this);
-    serviceControl = new ServiceControl(this);
+    serviceControl = new ServiceControl();
     alerts = new Alerts(this);
     corsControl = new CORSControl(this);
     addressSettings = new AddressSettings(this);
     usersService = new UsersService(this);
+    clusterFork = new ClusterForkService(this);
+    envControl = new EnvControl();
     info = new Info();
     backup = new Backup(this);
     pluginHosts = getBuiltinRuntimeHosts();
@@ -119,7 +127,13 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
                     return;
                 }
 
-                const socket = net.connect(clusterObject.port, '127.0.0.1');
+                let address = clusterObject.address;
+                if (isClusterAddress(address))
+                    address = '127.0.0.1';
+                const socket = net.connect({
+                    port: clusterObject.port,
+                    host: address,
+                });
                 socket.on('error', () => connection.close());
                 socket.on('close', () => connection.close());
                 socket.on('data', data => connection.send(data));
@@ -220,6 +234,8 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
     }
 
     getDeviceLogger(device: PluginDevice): Logger {
+        if (!device)
+            return;
         return this.devicesLogger.getLogger(device._id, getState(device, ScryptedInterfaceProperty.name));
     }
 
@@ -361,6 +377,10 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
                 return this.usersService;
             case 'backup':
                 return this.backup;
+            case 'cluster-fork':
+                return this.clusterFork;
+            case 'env-control':
+                return this.envControl;
         }
     }
 
@@ -439,7 +459,7 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
 
         const { pluginId } = pluginHost;
         const filesPath = path.join(getPluginVolume(pluginId), 'files');
-        const ri = createResponseInterface(res, pluginHost.unzippedPath, filesPath);
+        const ri = createResponseInterface(this, res, pluginHost.unzippedPath, filesPath);
         handler.onRequest(endpointRequest, ri)
             .catch(() => { })
             .finally(() => {

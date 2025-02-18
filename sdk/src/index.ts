@@ -1,6 +1,7 @@
 export * from '../types/gen/index';
 import type { DeviceManager, DeviceState, EndpointManager, EventListenerRegister, Logger, MediaManager, MediaObject, ScryptedInterface, ScryptedNativeId, ScryptedStatic, SystemManager, WritableDeviceState } from '../types/gen/index';
 import { DeviceBase, ScryptedInterfaceDescriptors, ScryptedInterfaceProperty, TYPES_VERSION } from '../types/gen/index';
+import { createRequire } from 'module';
 
 /**
  * @category Core Reference
@@ -17,28 +18,28 @@ export class ScryptedDeviceBase extends DeviceBase {
 
   get storage() {
     if (!this._storage) {
-      this._storage = deviceManager.getDeviceStorage(this.nativeId);
+      this._storage = sdk.deviceManager.getDeviceStorage(this.nativeId);
     }
     return this._storage;
   }
 
   get log() {
     if (!this._log) {
-      this._log = deviceManager.getDeviceLogger(this.nativeId);
+      this._log = sdk.deviceManager.getDeviceLogger(this.nativeId);
     }
     return this._log;
   }
 
   get console() {
     if (!this._console) {
-      this._console = deviceManager.getDeviceConsole(this.nativeId);
+      this._console = sdk.deviceManager.getDeviceConsole(this.nativeId);
     }
 
     return this._console;
   }
 
   async createMediaObject(data: any, mimeType: string) {
-    return mediaManager.createMediaObject(data, mimeType, {
+    return sdk.mediaManager.createMediaObject(data, mimeType, {
       sourceId: this.id,
     });
   }
@@ -46,16 +47,16 @@ export class ScryptedDeviceBase extends DeviceBase {
   getMediaObjectConsole(mediaObject: MediaObject): Console | undefined {
     if (typeof mediaObject.sourceId !== 'string')
       return this.console;
-    return deviceManager.getMixinConsole(mediaObject.sourceId, this.nativeId);
+    return sdk.deviceManager.getMixinConsole(mediaObject.sourceId, this.nativeId);
   }
 
   _lazyLoadDeviceState() {
     if (!this._deviceState) {
       if (this.nativeId) {
-        this._deviceState = deviceManager.getDeviceState(this.nativeId);
+        this._deviceState = sdk.deviceManager.getDeviceState(this.nativeId);
       }
       else {
-        this._deviceState = deviceManager.getDeviceState();
+        this._deviceState = sdk.deviceManager.getDeviceState();
       }
     }
   }
@@ -64,7 +65,7 @@ export class ScryptedDeviceBase extends DeviceBase {
    * Fire an event for this device.
    */
   onDeviceEvent(eventInterface: string, eventData: any): Promise<void> {
-    return deviceManager.onDeviceEvent(this.nativeId, eventInterface, eventData);
+    return sdk.deviceManager.onDeviceEvent(this.nativeId, eventInterface, eventData);
   }
 }
 
@@ -100,14 +101,14 @@ export class MixinDeviceBase<T> extends DeviceBase implements DeviceState {
     this.mixinDeviceInterfaces = options.mixinDeviceInterfaces;
     this.mixinStorageSuffix = options.mixinStorageSuffix;
     this._deviceState = options.mixinDeviceState;
-    this.nativeId = systemManager.getDeviceById(this.id).nativeId;
+    this.nativeId = sdk.systemManager.getDeviceById(this.id).nativeId;
     this.mixinProviderNativeId = options.mixinProviderNativeId;
 
     // RpcProxy will trap all properties, and the following check/hack will determine
     // if the device state came from another node worker thread.
     // This should ultimately be discouraged and warned at some point in the future.
     if ((this._deviceState as any).__rpcproxy_traps_all_properties && typeof this._deviceState.id === 'string') {
-      this._deviceState = deviceManager.createDeviceState(this._deviceState.id, this._deviceState.setState);
+      this._deviceState = sdk.deviceManager.createDeviceState(this._deviceState.id, this._deviceState.setState);
     }
   }
 
@@ -115,24 +116,24 @@ export class MixinDeviceBase<T> extends DeviceBase implements DeviceState {
     if (!this._storage) {
       const mixinStorageSuffix = this.mixinStorageSuffix;
       const mixinStorageKey = this.id + (mixinStorageSuffix ? ':' + mixinStorageSuffix : '');
-      this._storage = deviceManager.getMixinStorage(mixinStorageKey, this.mixinProviderNativeId);
+      this._storage = sdk.deviceManager.getMixinStorage(mixinStorageKey, this.mixinProviderNativeId);
     }
     return this._storage;
   }
 
   get console() {
     if (!this._console) {
-      if (deviceManager.getMixinConsole)
-        this._console = deviceManager.getMixinConsole(this.id, this.mixinProviderNativeId);
+      if (sdk.deviceManager.getMixinConsole)
+        this._console = sdk.deviceManager.getMixinConsole(this.id, this.mixinProviderNativeId);
       else
-        this._console = deviceManager.getDeviceConsole(this.mixinProviderNativeId);
+        this._console = sdk.deviceManager.getDeviceConsole(this.mixinProviderNativeId);
     }
 
     return this._console;
   }
 
   async createMediaObject(data: any, mimeType: string) {
-    return mediaManager.createMediaObject(data, mimeType, {
+    return sdk.mediaManager.createMediaObject(data, mimeType, {
       sourceId: this.id,
     });
   }
@@ -140,14 +141,14 @@ export class MixinDeviceBase<T> extends DeviceBase implements DeviceState {
   getMediaObjectConsole(mediaObject: MediaObject): Console {
     if (typeof mediaObject.sourceId !== 'string')
       return this.console;
-    return deviceManager.getMixinConsole(mediaObject.sourceId, this.mixinProviderNativeId);
+    return sdk.deviceManager.getMixinConsole(mediaObject.sourceId, this.mixinProviderNativeId);
   }
 
   /**
    * Fire an event for this device.
    */
   onDeviceEvent(eventInterface: string, eventData: any): Promise<void> {
-    return deviceManager.onMixinEvent(this.id, this, eventInterface, eventData);
+    return sdk.deviceManager.onMixinEvent(this.id, this, eventInterface, eventData);
   }
 
   _lazyLoadDeviceState() {
@@ -201,34 +202,71 @@ export class MixinDeviceBase<T> extends DeviceBase implements DeviceState {
   }
 })();
 
-export const sdk: ScryptedStatic = {} as any;
 declare const deviceManager: DeviceManager;
 declare const endpointManager: EndpointManager;
 declare const mediaManager: MediaManager;
 declare const systemManager: SystemManager;
 declare const pluginHostAPI: any;
 declare const pluginRuntimeAPI: any;
+export const sdk: ScryptedStatic = {} as any;
 
 try {
-  let runtimeAPI: any;
+  let loaded = false;
   try {
-    runtimeAPI = pluginRuntimeAPI;
+    // todo: remove usage of process.env.SCRYPTED_SDK_MODULE, only existed in prerelease builds.
+    // import.meta is not a reliable way to detect es module support in webpack since webpack
+    // evaluates that to true at runtime.
+    const esModule = process.env.SCRYPTED_SDK_ES_MODULE || process.env.SCRYPTED_SDK_MODULE;
+    const cjsModule = process.env.SCRYPTED_SDK_CJS_MODULE || process.env.SCRYPTED_SDK_MODULE;
+    // @ts-expect-error
+    if (esModule && typeof import.meta !== 'undefined') {
+      // @ts-expect-error
+      const require = createRequire(import.meta.url);
+      const sdkModule = require(esModule);
+      Object.assign(sdk, sdkModule.getScryptedStatic());
+      loaded = true;
+    }
+    else if (cjsModule) {
+      // @ts-expect-error
+      if (typeof __non_webpack_require__ !== 'undefined') {
+        // @ts-expect-error
+        const sdkModule = __non_webpack_require__(process.env.SCRYPTED_SDK_MODULE);
+        Object.assign(sdk, sdkModule.getScryptedStatic());
+        loaded = true;
+      }
+      else {
+        const sdkModule = require(cjsModule);
+        Object.assign(sdk, sdkModule.getScryptedStatic());
+        loaded = true;
+      }
+    }
   }
   catch (e) {
+    console.warn("failed to load sdk module", e);
+    throw e;
   }
 
-  Object.assign(sdk, {
-    log: deviceManager.getDeviceLogger(undefined),
-    deviceManager,
-    endpointManager,
-    mediaManager,
-    systemManager,
-    pluginHostAPI,
-    ...runtimeAPI,
-  });
+  if (!loaded) {
+    let runtimeAPI: any;
+    try {
+      runtimeAPI = pluginRuntimeAPI;
+    }
+    catch (e) {
+    }
+
+    Object.assign(sdk, {
+      log: deviceManager.getDeviceLogger(undefined),
+      deviceManager,
+      endpointManager,
+      mediaManager,
+      systemManager,
+      pluginHostAPI,
+      ...runtimeAPI,
+    });
+  }
 
   try {
-    (systemManager as any).setScryptedInterfaceDescriptors?.(TYPES_VERSION, ScryptedInterfaceDescriptors)?.catch(() => { });
+    (sdk.systemManager as any).setScryptedInterfaceDescriptors?.(TYPES_VERSION, ScryptedInterfaceDescriptors)?.catch(() => { });
   }
   catch (e) {
   }
@@ -238,3 +276,4 @@ catch (e) {
 }
 
 export default sdk;
+

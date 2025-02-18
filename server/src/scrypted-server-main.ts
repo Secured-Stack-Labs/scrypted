@@ -11,38 +11,26 @@ import net from 'net';
 import os from 'os';
 import path from 'path';
 import process from 'process';
-import semver from 'semver';
 import { install as installSourceMapSupport } from 'source-map-support';
 import { createSelfSignedCertificate, CURRENT_SELF_SIGNED_CERTIFICATE_VERSION } from './cert';
+import { getScryptedClusterMode } from './cluster/cluster-setup';
 import { Plugin, ScryptedUser, Settings } from './db-types';
 import { getUsableNetworkAddresses } from './ip';
 import Level from './level';
-import { PluginError } from './plugin/plugin-error';
 import { getScryptedVolume } from './plugin/plugin-volume';
-import { RPCResultError } from './rpc';
 import { ScryptedRuntime } from './runtime';
+import { createClusterServer } from './scrypted-cluster-main';
 import { SCRYPTED_DEBUG_PORT, SCRYPTED_INSECURE_PORT, SCRYPTED_SECURE_PORT } from './server-settings';
 import { getNpmPackageInfo } from './services/plugin';
+import type { ServiceControl } from './services/service-control';
 import { setScryptedUserPassword, UsersService } from './services/users';
 import { sleep } from './sleep';
 import { ONE_DAY_MILLISECONDS, UserToken } from './usertoken';
 
 export type Runtime = ScryptedRuntime;
 
-if (!semver.gte(process.version, '18.0.0')) {
-    throw new Error('"node" version out of date. Please update node to v18 or higher.')
-}
-
-process.on('unhandledRejection', error => {
-    if (error?.constructor !== RPCResultError && error?.constructor !== PluginError) {
-        console.error('pending crash', error);
-        throw error;
-    }
-    console.warn('unhandled rejection of RPC Result', error);
-});
-
-async function listenServerPort(env: string, port: number, server: any) {
-    server.listen(port);
+async function listenServerPort(env: string, port: number, server: http.Server | https.Server | net.Server, hostname?: string) {
+    server.listen(port, hostname);
     try {
         await once(server, 'listening');
     }
@@ -58,10 +46,11 @@ installSourceMapSupport({
 });
 
 let workerInspectPort: number = undefined;
+let workerInspectAddress: string = undefined;
 
 async function doconnect(): Promise<net.Socket> {
     return new Promise((resolve, reject) => {
-        const target = net.connect(workerInspectPort, '127.0.0.1');
+        const target = net.connect(workerInspectPort, workerInspectAddress);
         target.once('error', reject)
         target.once('connect', () => resolve(target))
     })
@@ -112,7 +101,9 @@ app.use(bodyParser.raw({ type: 'application/*', limit: 100000000 }) as any)
 
 async function start(mainFilename: string, options?: {
     onRuntimeCreated?: (runtime: ScryptedRuntime) => Promise<void>,
+    serviceControl?: ServiceControl;
 }) {
+    console.log('Scrypted server starting.');
     const volumeDir = getScryptedVolume();
     await fs.promises.mkdir(volumeDir, {
         recursive: true
@@ -361,7 +352,17 @@ async function start(mainFilename: string, options?: {
     });
 
     const scrypted = new ScryptedRuntime(mainFilename, db, insecure, secure, app);
+    if (options?.serviceControl)
+        scrypted.serviceControl = options.serviceControl;
     await options?.onRuntimeCreated?.(scrypted);
+
+    const clusterMode = getScryptedClusterMode();
+    if (clusterMode?.[0] === 'server') {
+        console.log('Cluster server starting.');
+        const clusterServer = createClusterServer(mainFilename, scrypted, keyPair);
+        await listenServerPort('SCRYPTED_CLUSTER_SERVER', clusterMode[2], clusterServer);
+    }
+
     await scrypted.start();
 
 
@@ -474,14 +475,23 @@ async function start(mainFilename: string, options?: {
             debugServer.on('connection', resolve);
         });
 
-        waitDebug.catch(() => {});
+        waitDebug.catch(() => { });
 
         workerInspectPort = Math.round(Math.random() * 10000) + 30000;
+        workerInspectAddress = '127.0.0.1';
         try {
-            await scrypted.installPlugin(plugin, {
+            const host = await scrypted.installPlugin(plugin, {
                 waitDebug,
                 inspectPort: workerInspectPort,
             });
+
+            const clusterWorkerId = await host.clusterWorkerId;
+            if (clusterWorkerId) {
+                const clusterWorker = scrypted.clusterWorkers.get(clusterWorkerId);
+                if (clusterWorker) {
+                    workerInspectAddress = clusterWorker.address;
+                }
+            }
         }
         catch (e) {
             res.header('Content-Type', 'text/plain');
@@ -492,6 +502,7 @@ async function start(mainFilename: string, options?: {
 
         res.send({
             workerInspectPort,
+            workerInspectAddress,
         });
     });
 
@@ -746,13 +757,13 @@ async function start(mainFilename: string, options?: {
     console.log(`Version:       : ${await scrypted.info.getVersion()}`);
     console.log('#######################################################');
     console.log('Scrypted insecure http service port:', SCRYPTED_INSECURE_PORT);
-    console.log('Ports can be changed with environment variables.')
-    console.log('https: $SCRYPTED_SECURE_PORT')
-    console.log('http : $SCRYPTED_INSECURE_PORT')
-    console.log('Certificate can be modified via tls.createSecureContext options in')
+    console.log('Ports can be changed with environment variables.');
+    console.log('https: $SCRYPTED_SECURE_PORT');
+    console.log('http : $SCRYPTED_INSECURE_PORT');
+    console.log('Certificate can be modified via tls.createSecureContext options in');
     console.log('JSON file located at SCRYPTED_HTTPS_OPTIONS_FILE environment variable:');
     console.log('export SCRYPTED_HTTPS_OPTIONS_FILE=/path/to/options.json');
-    console.log('https://nodejs.org/api/tls.html#tlscreatesecurecontextoptions')
+    console.log('https://nodejs.org/api/tls.html#tlscreatesecurecontextoptions');
     console.log('#######################################################');
 
     return scrypted;

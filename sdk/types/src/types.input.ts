@@ -214,6 +214,24 @@ export interface ColorHsv {
   v?: number;
 }
 
+export interface Buttons {
+  buttons?: ('doorbell' | string)[];
+}
+
+export interface Sensor {
+  name: string;
+  value?: string | number;
+  unit?: string;
+}
+
+export interface Sensors {
+  sensors: Record<string, Sensor>;
+}
+
+export interface PressButtons {
+  pressButton(button: string): Promise<void>;
+}
+
 export interface NotificationAction {
   action: string;
   icon?: string;
@@ -234,6 +252,10 @@ export interface NotifierOptions {
   renotify?: boolean;
   requireInteraction?: boolean;
   silent?: boolean;
+  critical?: boolean;
+  /**
+   * Collapse key/id.
+   */
   tag?: string;
   timestamp?: number;
   vibrate?: VibratePattern;
@@ -950,6 +972,24 @@ export interface VideoCameraMask {
   setPrivacyMasks(masks: PrivacyMasks): Promise<void>;
 }
 
+export interface VideoTextOverlay {
+  /**
+   * The top left position of the overlay in the image, normalized to 0-1.
+   */
+  origin?: Point;
+  fontSize?: number;
+  /**
+   * The text value to set the overlay to, if it is not readonly. True or false otherwise to enable/disable.
+   */
+  text?: string | boolean;
+  readonly?: boolean;
+}
+
+export interface VideoTextOverlays {
+  getVideoTextOverlays(): Promise<Record<string, VideoTextOverlay>>;
+  setVideoTextOverlay(id: string, value: VideoTextOverlay): Promise<void>;
+}
+
 export enum PanTiltZoomMovement {
   Absolute = "Absolute",
   Relative = "Relative",
@@ -1256,6 +1296,10 @@ export interface Charger {
   chargeState?: ChargeState;
 }
 
+export interface Sleep {
+  sleeping?: boolean;
+}
+
 export interface Reboot {
   reboot(): Promise<void>;
 }
@@ -1529,6 +1573,10 @@ export interface ObjectDetectionResult extends BoundingBoxResult {
    */
   cost?: number;
   /**
+   * Flag that indicates whether the detection was clipped by the detection input and may not be a full bounding box.
+   */
+  clipped?: boolean;
+  /**
    * The detection class of the object.
    */
   className: ObjectDetectionClass;
@@ -1544,11 +1592,6 @@ export interface ObjectDetectionResult extends BoundingBoxResult {
    * The score of the label.
    */
   labelScore?: number;
-  /**
-   * A base64 encoded Float32Array that represents the vector descriptor of the detection.
-   * Can be used to compute euclidian distance to determine similarity.
-   */
-  descriptor?: string;
   /**
    * The detection landmarks, like key points in a face landmarks.
    */
@@ -1603,6 +1646,7 @@ export interface ObjectDetectionGeneratorSession {
   zones?: ObjectDetectionZone[];
   settings?: { [key: string]: any };
   sourceId?: string;
+  clusterWorkerId?: ForkOptions['clusterWorkerId'];
 }
 export interface ObjectDetectionSession extends ObjectDetectionGeneratorSession {
   /**
@@ -1683,6 +1727,7 @@ export interface VideoFrameGeneratorOptions extends ImageOptions {
   queue?: number;
   fps?: number;
   firstFrameOnly?: boolean;
+  clusterWorkerId?: ForkOptions['clusterWorkerId'];
 }
 export interface VideoFrameGenerator {
   generateVideoFrames(mediaObject: MediaObject, options?: VideoFrameGeneratorOptions): Promise<AsyncGenerator<VideoFrame, void>>;
@@ -1690,7 +1735,7 @@ export interface VideoFrameGenerator {
 /**
  * Generic bidirectional stream connection.
  */
-export interface StreamService<Input, Output=Input> {
+export interface StreamService<Input, Output = Input> {
   connectStream(input?: AsyncGenerator<Input, void>, options?: any): Promise<AsyncGenerator<Output, void>>;
 }
 /**
@@ -2070,12 +2115,6 @@ export interface SystemManager {
   getDeviceByName<T>(name: string): ScryptedDevice & T;
 
   /**
-   * Get the current state of a device.
-   * @deprecated
-   */
-  getDeviceState(id: string): { [property: string]: SystemDeviceState };
-
-  /**
    * Get the current state of every device.
    */
   getSystemState(): { [id: string]: { [property: string]: SystemDeviceState } };
@@ -2148,19 +2187,20 @@ export interface HttpRequest {
  * @category Webhook and Push Reference
  */
 export interface HttpResponse {
-  send(body: string): void;
+  send(body: string, options?: HttpResponseOptions): void;
 
-  send(body: string, options: HttpResponseOptions): void;
+  send(body: Buffer, options?: HttpResponseOptions): void;
 
-  send(body: Buffer): void;
+  sendFile(path: string, options?: HttpResponseOptions): void;
 
-  send(body: Buffer, options: HttpResponseOptions): void;
+  /**
+   * @deprecated
+   * @param socket 
+   * @param options 
+   */
+  sendSocket(socket: any, options?: HttpResponseOptions): void;
 
-  sendFile(path: string): void;
-
-  sendFile(path: string, options: HttpResponseOptions): void;
-
-  sendSocket(socket: any, options: HttpResponseOptions): void;
+  sendStream(stream: AsyncGenerator<Buffer, void>, options?: HttpResponseOptions): void;
 }
 /**
  * @category Webhook and Push Reference
@@ -2255,6 +2295,9 @@ export enum ScryptedInterface {
   ColorSettingTemperature = "ColorSettingTemperature",
   ColorSettingRgb = "ColorSettingRgb",
   ColorSettingHsv = "ColorSettingHsv",
+  Buttons = "Buttons",
+  PressButtons = "PressButtons",
+  Sensors = "Sensors",
   Notifier = "Notifier",
   StartStop = "StartStop",
   Pause = "Pause",
@@ -2268,6 +2311,7 @@ export enum ScryptedInterface {
   Display = "Display",
   VideoCamera = "VideoCamera",
   VideoCameraMask = "VideoCameraMask",
+  VideoTextOverlays = "VideoTextOverlays",
   VideoRecorder = "VideoRecorder",
   VideoRecorderManagement = "VideoRecorderManagement",
   PanTiltZoom = "PanTiltZoom",
@@ -2294,6 +2338,7 @@ export enum ScryptedInterface {
   Settings = "Settings",
   BinarySensor = "BinarySensor",
   TamperSensor = "TamperSensor",
+  Sleep = "Sleep",
   PowerSensor = "PowerSensor",
   AudioSensor = "AudioSensor",
   MotionSensor = "MotionSensor",
@@ -2320,6 +2365,7 @@ export enum ScryptedInterface {
   PushHandler = "PushHandler",
   Program = "Program",
   Scriptable = "Scriptable",
+  ClusterForkInterface = "ClusterForkInterface",
   ObjectTracker = "ObjectTracker",
   ObjectDetector = "ObjectDetector",
   ObjectDetection = "ObjectDetection",
@@ -2534,7 +2580,18 @@ export interface FFmpegTranscode {
 }
 export type FFmpegTranscodeStream = (options: FFmpegTranscode) => Promise<void>;
 
-export interface ForkWorker {
+export interface ClusterForkInterfaceOptions extends Required<Pick<ForkOptions, 'clusterWorkerId'>>, Pick<ForkOptions, 'id' | 'nativeId'> {
+}
+
+/**
+ * Requests that the ScryptedDevice create a fork to 
+ */
+export interface ClusterForkInterface {
+  forkInterface(forkInterface: ScryptedInterface.ObjectDetection, options?: ClusterForkInterfaceOptions): Promise<ObjectDetection>;
+  forkInterface<T>(forkInterface: ScryptedInterface, options?: ClusterForkInterfaceOptions): Promise<T>;
+}
+
+export interface ForkWorker extends Disposable {
   terminate(): void;
   on(event: 'exit', listener: () => void): void;
   removeListener(event: 'exit', listener: () => void): void;
@@ -2542,7 +2599,11 @@ export interface ForkWorker {
   removeListener(event: 'error', listener: (e: Error) => void): void;
   nativeWorker?: NodeChildProcess | NodeWorker;
 }
-export interface PluginFork<T> {
+export interface PluginFork<T> extends Disposable {
+  /**
+   * The id of the cluster worker that is executing this fork when in cluster mode.
+   */
+  clusterWorkerId?: Promise<string>;
   result: Promise<T>;
   worker: ForkWorker;
 }
@@ -2609,11 +2670,76 @@ export interface ConnectOptions extends APIOptions {
 }
 
 export interface ForkOptions {
+  /**
+   * The name of this fork. This will be used to set the thread name
+   */
   name?: string;
-  filename?: string;
+  /**
+   * The runtime to use for this fork. If not specified, the current runtime will be used.
+   */
   runtime?: string;
+  /**
+   * The filename to execute in the fork. Not supported in all runtimes.
+   */
+  filename?: string;
+  /**
+   * The id of the device that is associated with this fork.
+   */
   id?: string;
+  /**
+   * The native id of the mixin that is associated with this fork.
+   */
   nativeId?: ScryptedNativeId;
+
+  /**
+   * The id of the cluster worker id that will execute this fork.
+   */
+  clusterWorkerId?: string;
+  /**
+   * The labels used to select the cluster worker that will execute this fork.
+   */
+  labels?: {
+    /**
+     * The worker must have all these labels.
+     */
+    require?: string[];
+    /**
+     * The worker must have one of these labels.
+     */
+    any?: string[];
+    /**
+     * The worker is preferred to have one of these labels.
+     * The nearest match will be selected.
+     */
+    prefer?: string[];
+  };
+}
+
+export interface ClusterFork {
+  runtime?: ForkOptions['runtime'];
+  labels?: ForkOptions['labels'];
+  id?: ForkOptions['id'];
+  clusterWorkerId: ForkOptions['clusterWorkerId'];
+}
+
+export interface ClusterWorker {
+  name: string;
+  id: string;
+  labels: string[];
+  forks: ClusterFork[];
+  mode: 'server' | 'client';
+  address: string;
+}
+
+export interface ClusterManager {
+  /**
+   * Returns the id of this cluster worker.
+   * Returns undefined if this is not a cluster worker.
+   */
+  getClusterWorkerId(): string;
+  getClusterAddress(): string;
+  getClusterMode(): 'server' | 'client' | undefined;
+  getClusterWorkers(): Promise<Record<string, ClusterWorker>>;
 }
 
 export interface ScryptedStatic {
@@ -2626,8 +2752,9 @@ export interface ScryptedStatic {
   endpointManager: EndpointManager,
   mediaManager: MediaManager,
   systemManager: SystemManager,
+  clusterManager: ClusterManager;
 
-  serverVersion?: string;
+  serverVersion: string;
 
   pluginHostAPI: any;
   pluginRemoteAPI: any;

@@ -1,20 +1,25 @@
 import dns from 'dns';
 import dotenv from 'dotenv';
 import fs from 'fs';
-import path from 'path';
 import process from 'process';
 import semver from 'semver';
 import v8 from 'v8';
 import vm from 'vm';
+import { getScryptedClusterMode } from './cluster/cluster-setup';
 import { PluginError } from './plugin/plugin-error';
-import { getScryptedVolume } from './plugin/plugin-volume';
+import { isNodePluginWorkerProcess } from './plugin/runtime/node-fork-worker';
+import type { getBuiltinRuntimeHosts } from './plugin/runtime/runtime-host';
 import { RPCResultError, startPeriodicGarbageCollection } from './rpc';
 import type { Runtime } from './scrypted-server-main';
-import { isNodePluginWorkerProcess } from './plugin/runtime/node-fork-worker';
-
+import { getDotEnvPath } from './services/env';
+import type { ServiceControl } from './services/service-control';
 
 function start(mainFilename: string, options?: {
+    serviceControl?: ServiceControl,
     onRuntimeCreated?: (runtime: Runtime) => Promise<void>,
+    onClusterWorkerCreated?: (options?: {
+        clusterPluginHosts?: ReturnType<typeof getBuiltinRuntimeHosts>,
+    }) => Promise<void>,
 }) {
     // Allow including a custom file path for platforms that require
     // compatibility hacks. For example, Android may need to patch
@@ -28,8 +33,8 @@ function start(mainFilename: string, options?: {
         globalThis.gc = vm.runInNewContext("gc");
     }
 
-    if (!semver.gte(process.version, '16.0.0')) {
-        throw new Error('"node" version out of date. Please update node to v16 or higher.')
+    if (!semver.gte(process.version, '18.0.0')) {
+        throw new Error('"node" version out of date. Please update node to v18 or higher.')
     }
 
     // Node 17 changes the dns resolution order to return the record order.
@@ -53,20 +58,26 @@ function start(mainFilename: string, options?: {
         const start = require('./scrypted-plugin-main').default;
         return start(mainFilename);
     }
+
+    // unhandled rejections are allowed if they are from a rpc/plugin call.
+    process.on('unhandledRejection', error => {
+        if (error?.constructor !== RPCResultError && error?.constructor !== PluginError) {
+            console.error('fatal error', error);
+            throw error;
+        }
+        console.warn('unhandled rejection of RPC Result', error);
+    });
+
+    dotenv.config({
+        path: getDotEnvPath(),
+    });
+
+    const clusterMode = getScryptedClusterMode();
+    if (clusterMode?.[0] === 'client') {
+        const start = require('./scrypted-cluster-main').default;
+        return start(mainFilename, options);
+    }
     else {
-        // unhandled rejections are allowed if they are from a rpc/plugin call.
-        process.on('unhandledRejection', error => {
-            if (error?.constructor !== RPCResultError && error?.constructor !== PluginError) {
-                console.error('fatal error', error);
-                throw error;
-            }
-            console.warn('unhandled rejection of RPC Result', error);
-        });
-
-        dotenv.config({
-            path: path.join(getScryptedVolume(), '.env'),
-        });
-
         const start = require('./scrypted-server-main').default;
         return start(mainFilename, options);
     }
