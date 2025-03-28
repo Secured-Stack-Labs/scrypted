@@ -28,22 +28,22 @@ jobs:
       # Fetch project source with GitHub Actions Checkout.
       - uses: actions/checkout@v4
 
-#      - name: Run SLS Scanner
-#        uses: tauruseer/sls-pipeline-scanner@v1.2.0
-#        with:
-#          scanKey: ${{ secrets.SLS_SCAN_KEY }}
-#          username: ${{ secrets.SLS_CLIENT_ID }}
-#          password: ${{ secrets.SLS_CLIENT_SECRET }}
-#          runSCA: 'true'
-#          runSAST: 'true'
-#          runGitLeaks: 'true'
-
-      - name: Login to ACR
-        uses: docker/login-action@v3
+      - name: Run SLS Scanner
+        uses: tauruseer/sls-pipeline-scanner@v1.2.0
         with:
-          registry: tauruseer.azurecr.io
+          scanKey: ${{ secrets.SLS_SCAN_KEY }}
           username: ${{ secrets.SLS_CLIENT_ID }}
           password: ${{ secrets.SLS_CLIENT_SECRET }}
+          runSCA: 'true'
+          runSAST: 'true'
+          runGitLeaks: 'true'
+
+#      - name: Login to ACR
+#        uses: docker/login-action@v3
+#        with:
+#          registry: tauruseer.azurecr.io
+#          username: ${{ secrets.SLS_CLIENT_ID }}
+#          password: ${{ secrets.SLS_CLIENT_SECRET }}
 
 #      # Run the "sls sca scan" command on the command line of the docker image.
 #      - run: docker pull tauruseer.azurecr.io/sca-scanner-pipeline:latest
@@ -52,16 +52,16 @@ jobs:
 #          # and add it to your GitHub secrets.
 #          SLS_SCAN_KEY: ${{ secrets.SLS_SCAN_KEY }}
           
-      # Run the "sls sast scan" command on the command line of the docker image.
-      #- run: docker login -u ${{ secrets.SLS_CLIENT_ID }} -p ${{ secrets.SLS_CLIENT_SECRET }} tauruseer.azurecr.io
-      - run: docker pull tauruseer.azurecr.io/sast-scanner-pipeline:latest
-#      - run: docker run -v ${{ github.workspace }}:/source tauruseer.azurecr.io/sast-scanner-pipeline:latest --scan-key=${SLS_SCAN_KEY} --secrets=true --write-file=true
-      - run: docker run -v ${{ github.workspace }}:/source tauruseer.azurecr.io/sast-scanner-pipeline:latest --scan-key=${SLS_SCAN_KEY} --secrets=true
+#      # Run the "sls sast scan" command on the command line of the docker image.
+#      #- run: docker login -u ${{ secrets.SLS_CLIENT_ID }} -p ${{ secrets.SLS_CLIENT_SECRET }} tauruseer.azurecr.io
+#      - run: docker pull tauruseer.azurecr.io/sast-scanner-pipeline:latest
+##      - run: docker run -v ${{ github.workspace }}:/source tauruseer.azurecr.io/sast-scanner-pipeline:latest --scan-key=${SLS_SCAN_KEY} --secrets=true --write-file=true
+#      - run: docker run -v ${{ github.workspace }}:/source tauruseer.azurecr.io/sast-scanner-pipeline:latest --scan-key=${SLS_SCAN_KEY} --secrets=true
+#        env:
+#          # and add it to your GitHub secrets.
+#          SLS_SCAN_KEY: ${{ secrets.SLS_SCAN_KEY }}
 
-        env:
-          # and add it to your GitHub secrets.
-          SLS_SCAN_KEY: ${{ secrets.SLS_SCAN_KEY }}
-
+#      # Save artifact, requires --write-file=true to be enabled on sast scan
 #      - name: 'Save Scan Artifact'
 #        uses: actions/upload-artifact@v4
 #        with:
