@@ -12,6 +12,7 @@ import { ffmpegFilterImage, ffmpegFilterImageBuffer } from './ffmpeg-image-filte
 import { ImageConverter, ImageConverterNativeId } from './image-converter';
 import { ImageReader, ImageReaderNativeId, loadSharp, loadVipsImage } from './image-reader';
 import { ImageWriter, ImageWriterNativeId } from './image-writer';
+import { fixLegacyClipPath, normalizeBox, polygonIntersectsBoundingBox } from '../../objectdetector/src/polygon';
 
 const { mediaManager, systemManager } = sdk;
 if (os.cpus().find(cpu => cpu.model?.toLowerCase().includes('qemu'))) {
@@ -175,6 +176,7 @@ class SnapshotMixin extends SettingsMixinDeviceBase<Camera> implements Camera {
                 };
 
                 const request = prebufferChannel as RequestMediaStreamOptions;
+                request.audio = null;
                 // specify the prebuffer based on the usage. events shouldn't request
                 // lengthy prebuffers as it may not contain the image it needs.
                 request.prebuffer = eventSnapshot ? 1000 : 6000;
@@ -263,8 +265,11 @@ class SnapshotMixin extends SettingsMixinDeviceBase<Camera> implements Camera {
             }
             try {
                 // consider waking the camera if 
-                if (!eventSnapshot && this.mixinDeviceInterfaces.includes(ScryptedInterface.Sleep) && realDevice.sleeping)
-                    throw new Error('Not waking sleeping camera for periodic snapshot.');
+                if (!eventSnapshot && this.mixinDeviceInterfaces.includes(ScryptedInterface.Sleep) && realDevice.sleeping) {
+                    this.console.log('Not waking sleeping camera for periodic snapshot.');
+                    return this.lastAvailablePicture;
+                }
+
                 return await this.mixinDevice.takePicture(takePictureOptions).then(mo => mediaManager.convertMediaObjectToBuffer(mo, 'image/jpeg'))
             }
             catch (e) {
@@ -278,9 +283,10 @@ class SnapshotMixin extends SettingsMixinDeviceBase<Camera> implements Camera {
     async takePictureRaw(options?: RequestPictureOptions): Promise<Buffer> {
         const eventSnapshot = options?.reason === 'event';
         const periodicSnapshot = options?.reason === 'periodic';
+        const hoursDuration = this.mixinDeviceInterfaces.includes(ScryptedInterface.Sleep) ? 5 : 1;
 
         // clear out snapshots that are too old.
-        if (this.currentPictureTime < Date.now() - 1 * 60 * 60 * 1000)
+        if (this.currentPictureTime < Date.now() - hoursDuration * 60 * 60 * 1000)
             this.currentPicture = undefined;
 
         // always grab/debounce a snapshot
@@ -428,10 +434,11 @@ class SnapshotMixin extends SettingsMixinDeviceBase<Camera> implements Camera {
         if (!this.storageSettings.values.snapshotCropScale?.length)
             return picture;
 
-        const xmin = Math.min(...this.storageSettings.values.snapshotCropScale.map(([x, y]) => x)) / 100;
-        const ymin = Math.min(...this.storageSettings.values.snapshotCropScale.map(([x, y]) => y)) / 100;
-        const xmax = Math.max(...this.storageSettings.values.snapshotCropScale.map(([x, y]) => x)) / 100;
-        const ymax = Math.max(...this.storageSettings.values.snapshotCropScale.map(([x, y]) => y)) / 100;
+        const clipPath = fixLegacyClipPath(this.storageSettings.values.snapshotCropScale);
+        const xmin = Math.min(...clipPath.map(([x, y]) => x));
+        const ymin = Math.min(...clipPath.map(([x, y]) => y));
+        const xmax = Math.max(...clipPath.map(([x, y]) => x));
+        const ymax = Math.max(...clipPath.map(([x, y]) => y));
 
         if (loadSharp()) {
             const vips = await loadVipsImage(picture, this.id);
@@ -622,7 +629,7 @@ export class SnapshotPlugin extends AutoenableMixinProvider implements MixinProv
                     interfaces: [
                         ScryptedInterface.BufferConverter,
                     ],
-                    type: ScryptedDeviceType.Builtin,
+                    type: ScryptedDeviceType.Internal,
                     nativeId: ImageWriterNativeId,
                 },
                 {
@@ -630,7 +637,7 @@ export class SnapshotPlugin extends AutoenableMixinProvider implements MixinProv
                     interfaces: [
                         ScryptedInterface.BufferConverter,
                     ],
-                    type: ScryptedDeviceType.Builtin,
+                    type: ScryptedDeviceType.Internal,
                     nativeId: ImageConverterNativeId,
                 }
             ],
@@ -643,7 +650,7 @@ export class SnapshotPlugin extends AutoenableMixinProvider implements MixinProv
                     interfaces: [
                         ScryptedInterface.BufferConverter,
                     ],
-                    type: ScryptedDeviceType.Builtin,
+                    type: ScryptedDeviceType.Internal,
                     nativeId: ImageReaderNativeId,
                 }
             );

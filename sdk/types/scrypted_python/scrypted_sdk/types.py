@@ -74,6 +74,7 @@ class ScryptedDeviceType(str, Enum):
     AirPurifier = "AirPurifier"
     API = "API"
     Automation = "Automation"
+    Bridge = "Bridge"
     Builtin = "Builtin"
     Camera = "Camera"
     DataSource = "DataSource"
@@ -84,14 +85,18 @@ class ScryptedDeviceType(str, Enum):
     Event = "Event"
     Fan = "Fan"
     Garage = "Garage"
+    Internal = "Internal"
+    Internet = "Internet"
     Irrigation = "Irrigation"
     Light = "Light"
     Lock = "Lock"
+    Network = "Network"
     Notifier = "Notifier"
     Outlet = "Outlet"
     PasswordControl = "PasswordControl"
     Person = "Person"
     Program = "Program"
+    RemoteDesktop = "RemoteDesktop"
     Scene = "Scene"
     SecuritySystem = "SecuritySystem"
     Sensor = "Sensor"
@@ -352,8 +357,18 @@ class PrivacyMask(TypedDict):
     name: str
     points: list[Point]
 
+class RequestAudioStreamOptions(TypedDict):
+
+    alternateCodecs: list[str]
+    bitrate: float
+    codec: str
+    encoder: str
+    profile: str
+    sampleRate: float
+
 class RequestMediaStreamAdaptiveOptions(TypedDict):
 
+    codecSwitch: bool
     keyframe: bool
     packetLoss: bool
     pictureLoss: bool
@@ -362,6 +377,7 @@ class RequestMediaStreamAdaptiveOptions(TypedDict):
 
 class RequestVideoStreamOptions(TypedDict):
 
+    alternateCodecs: list[str]
     bitrate: float
     bitrateControl: Any | Any
     clientHeight: float
@@ -510,7 +526,7 @@ class Device(TypedDict):
     providerNativeId: str  # The native id of the hub or discovery DeviceProvider that manages this device.
     refresh: bool  # Directs Scrypted to purge any previously returned instances of the device and call getDevice on the DeviceProvider.
     room: str
-    type: ScryptedDeviceType
+    type: str
 
 class DeviceCreatorSettings(TypedDict):
 
@@ -520,6 +536,7 @@ class DeviceCreatorSettings(TypedDict):
 class DeviceInformation(TypedDict):
 
     deeplink: Any
+    description: str
     firmware: str
     ip: str
     mac: str
@@ -544,7 +561,7 @@ class DiscoveredDevice(TypedDict):
     name: str
     nativeId: str
     settings: list[Setting]
-    type: ScryptedDeviceType
+    type: str
 
 class EndpointAccessControlAllowOrigin(TypedDict):
 
@@ -586,16 +603,13 @@ class FanStatus(TypedDict):
 class FFmpegInput(TypedDict):
 
     container: str
-    destinationVideoBitrate: float
     env: Any  # Environment variables to set when launching FFmpeg.
     ffmpegPath: str  # Path to a custom FFmpeg binary.
     h264EncoderArguments: list[str]
-    h264FilterArguments: list[str]
     inputArguments: list[str]
     mediaStreamOptions: ResponseMediaStreamOptions
     url: str  # The media url for this FFmpegInput.
     urls: list[str]  # Alternate media urls for this FFmpegInput.
-    videoDecoderArguments: list[str]
 
 class HttpRequest(TypedDict):
 
@@ -779,7 +793,7 @@ class RequestMediaStreamOptions(TypedDict):
     """Options passed to VideoCamera.getVideoStream to request specific media formats. The audio/video properties may be omitted to indicate no audio/video is available when calling getVideoStreamOptions or no audio/video is requested when calling getVideoStream."""
 
     adaptive: bool | RequestMediaStreamAdaptiveOptions  # Request an adaptive bitrate stream, if available. The destination will need to report packet loss indication.
-    audio: AudioStreamOptions
+    audio: RequestAudioStreamOptions
     container: str  # The container type of this stream, ie: mp4, mpegts, rtsp.
     destination: MediaStreamDestination  # The intended destination for this media stream. May be used as a hint to determine which main/substream to send if no id is explicitly provided.
     destinationId: str  # The destination id for this media stream. This should generally be the IP address of the destination, if known. May be used by to determine stream selection and track dynamic bitrate history.
@@ -807,7 +821,7 @@ class RequestRecordingStreamOptions(TypedDict):
     """Options passed to VideoCamera.getVideoStream to request specific media formats. The audio/video properties may be omitted to indicate no audio/video is available when calling getVideoStreamOptions or no audio/video is requested when calling getVideoStream."""
 
     adaptive: bool | RequestMediaStreamAdaptiveOptions  # Request an adaptive bitrate stream, if available. The destination will need to report packet loss indication.
-    audio: AudioStreamOptions
+    audio: RequestAudioStreamOptions
     container: str  # The container type of this stream, ie: mp4, mpegts, rtsp.
     destination: MediaStreamDestination  # The intended destination for this media stream. May be used as a hint to determine which main/substream to send if no id is explicitly provided.
     destinationId: str  # The destination id for this media stream. This should generally be the IP address of the destination, if known. May be used by to determine stream selection and track dynamic bitrate history.
@@ -869,6 +883,7 @@ class ScryptedRuntimeArguments(TypedDict):
 class ScryptedSystemDeviceInfo(TypedDict):
 
     deviceCreator: str  # The description of device that will be created by this DeviceCreator. For example: Example Corp Camera or ACME Light Switch.
+    deviceDiscovery: str
     settings: str  # The name of the device as seen in System Settings.
 
 class ScryptedUserAccessControl(TypedDict):
@@ -897,15 +912,18 @@ class Setting(TypedDict):
     description: str
     deviceFilter: str
     group: str
+    icon: str
+    icons: list[str]
     immediate: bool  # Flag that the UI should immediately apply this setting.
     key: str
     multiple: bool
     placeholder: str
-    range: tuple[float, float]  # The range of allowed numbers, if any, when the type is 'number'.
+    radioGroups: list[str]
+    range: tuple[float, float]  # The range of allowed numbers or dates/times, if any, when the type is number, timerange, or daterange, or datetimerange.
     readonly: bool
     subgroup: str
     title: str
-    type: Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any
+    type: Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any | Any
     value: SettingValue
 
 class TemperatureCommand(TypedDict):
@@ -943,6 +961,12 @@ class VideoClipThumbnailOptions(TypedDict):
 
     aspectRatio: float
 
+class VideoFrame(TypedDict):
+
+    __json_copy_serialize_children: Any
+    image: Union[Image, MediaObject]
+    timestamp: float
+
 class VideoFrameGeneratorOptions(TypedDict):
 
     clusterWorkerId: str
@@ -971,7 +995,7 @@ class TamperState(TypedDict):
     pass
 
 
-TYPES_VERSION = "0.3.109"
+TYPES_VERSION = "0.5.12"
 
 
 class AirPurifier:
@@ -1259,7 +1283,7 @@ class Microphone:
 class MixinProvider:
     """MixinProviders can add and intercept interfaces to other devices to add or augment their behavior."""
 
-    async def canMixin(self, type: ScryptedDeviceType, interfaces: list[str]) -> None | list[str]:
+    async def canMixin(self, type: str, interfaces: list[str]) -> None | list[str]:
         pass
 
     async def getMixin(self, mixinDevice: Any, mixinDeviceInterfaces: list[ScryptedInterface], mixinDeviceState: WritableDeviceState) -> Any:
@@ -1476,12 +1500,12 @@ class ScryptedDevice:
     nativeId: str
     pluginId: str
     providedInterfaces: list[str]
-    providedName: ScryptedDeviceType
+    providedName: str
     providedRoom: str
-    providedType: ScryptedDeviceType
+    providedType: str
     providerId: str
     room: str
-    type: ScryptedDeviceType
+    type: str
     def listen(self, event: str | EventListenerOptions, callback: EventListener) -> EventListenerRegister:
         pass
 
@@ -2139,11 +2163,11 @@ class DeviceState:
         self.setScryptedProperty("providedInterfaces", value)
 
     @property
-    def providedName(self) -> ScryptedDeviceType:
+    def providedName(self) -> str:
         return self.getScryptedProperty("providedName")
 
     @providedName.setter
-    def providedName(self, value: ScryptedDeviceType):
+    def providedName(self, value: str):
         self.setScryptedProperty("providedName", value)
 
     @property
@@ -2155,11 +2179,11 @@ class DeviceState:
         self.setScryptedProperty("providedRoom", value)
 
     @property
-    def providedType(self) -> ScryptedDeviceType:
+    def providedType(self) -> str:
         return self.getScryptedProperty("providedType")
 
     @providedType.setter
-    def providedType(self, value: ScryptedDeviceType):
+    def providedType(self, value: str):
         self.setScryptedProperty("providedType", value)
 
     @property
@@ -2179,11 +2203,11 @@ class DeviceState:
         self.setScryptedProperty("room", value)
 
     @property
-    def type(self) -> ScryptedDeviceType:
+    def type(self) -> str:
         return self.getScryptedProperty("type")
 
     @type.setter
-    def type(self, value: ScryptedDeviceType):
+    def type(self, value: str):
         self.setScryptedProperty("type", value)
 
     @property
@@ -3399,16 +3423,6 @@ class HttpResponse:
         pass
 
     def sendStream(self, stream: AsyncGenerator[bytearray, None], options: HttpResponseOptions = None) -> None:
-        pass
-
-
-class VideoFrame:
-
-    __json_copy_serialize_children: Any
-    image: Union[Image, MediaObject]
-    queued: float
-    timestamp: float
-    async def flush(self, count: float = None) -> None:
         pass
 
 

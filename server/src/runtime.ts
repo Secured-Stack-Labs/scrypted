@@ -16,6 +16,7 @@ import { Parser as TarParser } from 'tar';
 import { URL } from "url";
 import WebSocket, { Server as WebSocketServer } from "ws";
 import { computeClusterObjectHash } from './cluster/cluster-hash';
+import { isClusterAddress } from './cluster/cluster-setup';
 import { ClusterObject } from './cluster/connect-rpc-object';
 import { Plugin, PluginDevice, ScryptedAlert, ScryptedUser } from './db-types';
 import { httpFetch } from './fetch/http-fetch';
@@ -33,20 +34,20 @@ import { isConnectionUpgrade, PluginHttp } from './plugin/plugin-http';
 import { WebSocketConnection } from './plugin/plugin-remote-websocket';
 import { getPluginVolume } from './plugin/plugin-volume';
 import { getBuiltinRuntimeHosts } from './plugin/runtime/runtime-host';
+import { timeoutPromise } from './promise-utils';
+import { RunningClusterWorker } from './scrypted-cluster-main';
 import { getIpAddress, SCRYPTED_INSECURE_PORT, SCRYPTED_SECURE_PORT } from './server-settings';
 import { AddressSettings } from './services/addresses';
 import { Alerts } from './services/alerts';
 import { Backup } from './services/backup';
 import { ClusterForkService } from './services/cluster-fork';
 import { CORSControl } from './services/cors';
+import { EnvControl } from './services/env';
 import { Info } from './services/info';
 import { getNpmPackageInfo, PluginComponent } from './services/plugin';
 import { ServiceControl } from './services/service-control';
 import { UsersService } from './services/users';
 import { getState, ScryptedStateManager, setState } from './state';
-import { isClusterAddress } from './cluster/cluster-setup';
-import { RunningClusterWorker } from './scrypted-cluster-main';
-import { EnvControl } from './services/env';
 
 interface DeviceProxyPair {
     handler: PluginDeviceProxyHandler;
@@ -97,7 +98,7 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
     backup = new Backup(this);
     pluginHosts = getBuiltinRuntimeHosts();
 
-    constructor(public mainFilename: string, public datastore: Level, insecure: http.Server, secure: https.Server, app: express.Application) {
+    constructor(public mainFilename: string, public datastore: Level, app: express.Application) {
         super(app);
         // ensure that all the users are loaded from the db.
         this.usersService.getAllUsers();
@@ -151,22 +152,6 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
                 connection.close();
             }
         });
-
-        insecure.on('upgrade', (req, socket, upgradeHead) => {
-            (req as any).upgradeHead = upgradeHead;
-            (app as any).handle(req, {
-                socket,
-                upgradeHead
-            })
-        });
-
-        secure.on('upgrade', (req, socket, upgradeHead) => {
-            (req as any).upgradeHead = upgradeHead;
-            (app as any).handle(req, {
-                socket,
-                upgradeHead
-            })
-        })
 
         this.logger.on('log', (logEntry: LogEntry) => {
             if (logEntry.level !== 'a')
@@ -678,7 +663,7 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
                 }
 
                 try {
-                    this.runPlugin(plugin);
+                    await this.runPlugin(plugin);
                 }
                 catch (e) {
                     logger.log('e', `error restarting plugin ${pluginId}`);
@@ -691,7 +676,6 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
         if (pluginHost) {
             pluginHost.worker.once('error', restart);
             pluginHost.worker.once('exit', restart);
-            pluginHost.worker.once('close', restart);
         }
         else {
             restart();
@@ -754,7 +738,16 @@ export class ScryptedRuntime extends PluginHttp<HttpPluginData> {
 
     }
 
-    runPlugin(plugin: Plugin, pluginDebug?: PluginDebug) {
+    async runPlugin(plugin: Plugin, pluginDebug?: PluginDebug) {
+        const existingPluginHost = this.plugins[plugin._id];
+        const killPromise = existingPluginHost?.worker?.killPromise;
+        if (killPromise) {
+            existingPluginHost?.kill();
+            await timeoutPromise(5000, killPromise).catch(() => {
+                console.warn('plugin worker did not exit in 5 seconds');
+            });
+        }
+
         const pluginHost = this.loadPlugin(plugin, pluginDebug);
         this.probePluginDevices(plugin);
         return pluginHost;

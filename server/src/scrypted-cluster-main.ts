@@ -172,6 +172,9 @@ function createClusterForkParam(mainFilename: string, clusterId: string, cluster
         });
         let getRemote: any;
         let ping: any;
+        const timeout = setTimeout(() => {
+            threadPeer.kill('cluster fork timeout');
+        }, 10000);
         try {
             const initializeCluster: InitializeCluster = await threadPeer.getParam('initializeCluster');
             await initializeCluster({ clusterId, clusterSecret, clusterWorkerId });
@@ -189,9 +192,6 @@ function createClusterForkParam(mainFilename: string, clusterId: string, cluster
             }
         }
 
-        const timeout = setTimeout(() => {
-            threadPeer.kill('cluster fork timeout');
-        }, 10000);
         const clusterGetRemote = (...args: any[]) => {
             clearTimeout(timeout);
             return {
@@ -244,6 +244,7 @@ export function startClusterClient(mainFilename: string, options?: {
                 port,
                 // require ipv4 to normalize cluster address.
                 family: 4,
+                keepAlive: true,
             });
 
             try {
@@ -251,6 +252,7 @@ export function startClusterClient(mainFilename: string, options?: {
             }
             catch (e) {
                 console.warn('Cluster server not available.', host, port, e);
+                rawSocket.destroy();
                 continue;
             }
 
@@ -263,6 +265,7 @@ export function startClusterClient(mainFilename: string, options?: {
                 await once(socket, 'secureConnect');
             }
             catch (e) {
+                socket.destroy();
                 console.warn('Cluster server tls failed.', host, port, e);
                 continue;
             }
@@ -307,6 +310,7 @@ export function startClusterClient(mainFilename: string, options?: {
                 const { clusterId, clusterWorkerId } = await connectForkWorker(auth, properties);
                 const clusterPeerSetup = setupCluster(peer);
                 await clusterPeerSetup.initializeCluster({ clusterId, clusterSecret, clusterWorkerId });
+                console.log('Cluster server authenticated.', localAddress, localPort, properties);
 
                 peer.params['fork'] = createClusterForkParam(mainFilename, clusterId, clusterSecret, clusterWorkerId, clusterPluginHosts);
 
@@ -347,6 +351,8 @@ export function createClusterServer(mainFilename: string, scryptedRuntime: Scryp
         socket.on('close', () => {
             console.log('Cluster client disconnected.', socket.remoteAddress, socket.remotePort);
         });
+
+        socket.setKeepAlive(true);
 
         const peer = preparePeer(socket, 'server');
 

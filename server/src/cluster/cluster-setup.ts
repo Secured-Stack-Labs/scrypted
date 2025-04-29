@@ -1,5 +1,6 @@
 import { once } from 'events';
 import net from 'net';
+import os from 'os';
 import worker_threads from 'worker_threads';
 import { Deferred } from '../deferred';
 import { listenZero } from '../listen-zero';
@@ -344,7 +345,8 @@ export function setupCluster(peer: RpcPeer) {
 
         const clients = new Set<net.Socket>();
 
-        const clusterRpcServer = net.createServer(client => {
+
+        const { server: clusterRpcServer, port } = await clusterListenZero(client => {
             const clusterPeerAddress = client.remoteAddress;
             const clusterPeerPort = client.remotePort;
             const clusterPeerKey = getClusterPeerKey(clusterPeerAddress, clusterPeerPort);
@@ -364,11 +366,8 @@ export function setupCluster(peer: RpcPeer) {
             clients.add(client);
         });
 
-        const listenAddress = SCRYPTED_CLUSTER_ADDRESS
-            ? '0.0.0.0'
-            : '127.0.0.1';
+        clusterPort = port;
 
-        clusterPort = await listenZero(clusterRpcServer, listenAddress);
         peer.onProxySerialization = value => onProxySerialization(peer, value, undefined);
         delete peer.params.initializeCluster;
 
@@ -444,12 +443,55 @@ export function getScryptedClusterMode(): ['server' | 'client', string, number] 
         if (address && server && server !== address)
             throw new Error('SCRYPTED_CLUSTER_ADDRESS and SCRYPTED_CLUSTER_SERVER must not both be used.');
 
-        const serverAddress = address || server;
-        if (!net.isIP(serverAddress))
-            throw new Error('SCRYPTED_CLUSTER_ADDRESS is not set.');
+        let serverAddress = address || server;
+        if (!net.isIP(serverAddress)) {
+            // due to dhcp changes allowing an interface name for the server address is also valid,
+            // resolve using network interfaces.
+            const interfaces = os.networkInterfaces();
+            const iface = interfaces[serverAddress];
+            const ipv4 = iface?.find(i => i.family === 'IPv4');
+            if (!ipv4)
+                throw new Error('SCRYPTED_CLUSTER_ADDRESS is not set.');
+            serverAddress = ipv4.address;
+        }
         process.env.SCRYPTED_CLUSTER_ADDRESS = serverAddress;
         delete process.env.SCRYPTED_CLUSTER_SERVER;
     }
 
     return [mode, server, port];
+}
+
+export async function clusterListenZero(callback: (socket: net.Socket) => void) {
+    const SCRYPTED_CLUSTER_ADDRESS = process.env.SCRYPTED_CLUSTER_ADDRESS;
+    if (!SCRYPTED_CLUSTER_ADDRESS) {
+        const server = new net.Server(callback);
+        const port = await listenZero(server, '127.0.0.1');
+        return {
+            server,
+            port,
+        }
+    }
+
+    // need to listen on the cluster address and 127.0.0.1 on the same port.
+    let retries = 5;
+    while (retries--) {
+        const server = new net.Server(callback);
+        const port = await listenZero(server, SCRYPTED_CLUSTER_ADDRESS);
+        try {
+            const localServer = new net.Server(callback);
+            localServer.listen(port, '127.0.0.1');
+            await once(localServer, 'listening');
+            server.on('close', () => localServer.close());
+            return {
+                server,
+                port,
+            }
+        }
+        catch (e) {
+            // port may be in use, keep trying.
+            server.close();
+        }
+    }
+
+    throw new Error('failed to bind to cluster address.');
 }

@@ -175,6 +175,8 @@ export type RTPMap = ReturnType<typeof parseRtpMap>;
 export function parseRtpMap(mline: ReturnType<typeof parseMLine>, rtpmap: string) {
     const mlineType = mline.type;
     const match = rtpmap?.match(/a=rtpmap:([\d]+) (.*?)\/([\d]+)(\/([\d]+))?/);
+    let channels = parseInt(match?.[5]) || undefined;
+    let payloadType = parseInt(match?.[1]);
 
     rtpmap = rtpmap?.toLowerCase();
 
@@ -222,14 +224,20 @@ export function parseRtpMap(mline: ReturnType<typeof parseMLine>, rtpmap: string
         if (mline.payloadTypes?.includes(0)) {
             codec = 'pcm_mulaw';
             ffmpegEncoder = 'pcm_mulaw';
+            payloadType = 0;
+            channels = 1;
         }
         else if (mline.payloadTypes?.includes(8)) {
             codec = 'pcm_alaw';
             ffmpegEncoder = 'pcm_alaw';
+            payloadType = 8;
+            channels = 1;
         }
         else if (mline.payloadTypes?.includes(14)) {
             codec = 'mp3';
             ffmpegEncoder = 'mp3';
+            payloadType = 14;
+            channels = 2;
         }
         else {
             // ffmpeg seems to omit the rtpmap type for pcm alaw when creating sdp?
@@ -239,7 +247,19 @@ export function parseRtpMap(mline: ReturnType<typeof parseMLine>, rtpmap: string
             // https://en.wikipedia.org/wiki/RTP_payload_formats
             codec = 'pcm_alaw';
             ffmpegEncoder = 'pcm_alaw';
+            payloadType = 8;
+            channels = 1;
         }
+    }
+
+    // assigned payload types do not need to provide a clock, there is a default.
+    let clock = parseInt(match?.[3]);
+    if (!clock) {
+        clock = undefined;
+        if (codec === 'pcm_mulaw' || codec === 'pcm_alaw')
+            clock = 8000;
+        else if (codec === 'pcm_s16be')
+            clock = 16000;
     }
 
     return {
@@ -247,9 +267,9 @@ export function parseRtpMap(mline: ReturnType<typeof parseMLine>, rtpmap: string
         codec,
         ffmpegEncoder,
         rawCodec: match?.[2],
-        clock: parseInt(match?.[3]),
-        channels: parseInt(match?.[5]) || undefined,
-        payloadType: parseInt(match?.[1]),
+        clock,
+        channels,
+        payloadType,
     }
 }
 
@@ -357,5 +377,35 @@ export function getSpsPps(
     return {
         sps: Buffer.from(sps, 'base64'),
         pps: Buffer.from(pps, 'base64'),
+    }
+}
+
+export function getSpsPpsVps(
+    section: {
+        fmtp: {
+            payloadType: number;
+            parameters: {
+                [key: string]: string;
+            };
+        }[]
+    }
+) {
+    const parameters = section?.fmtp?.[0]?.parameters;
+    if (!parameters) {
+        return {
+            sps: undefined,
+            pps: undefined,
+            vps: undefined,
+        };
+    }
+
+    const sps = parameters['sprop-sps'];
+    const pps = parameters['sprop-pps'];
+    const vps = parameters['sprop-vps'];
+
+    return {
+        sps: sps ? Buffer.from(sps, 'base64') : undefined,
+        pps: pps ? Buffer.from(pps, 'base64') : undefined,
+        vps: vps ? Buffer.from(vps, 'base64') : undefined,
     }
 }

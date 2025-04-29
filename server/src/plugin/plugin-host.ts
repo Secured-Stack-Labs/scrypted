@@ -450,10 +450,6 @@ export class PluginHost {
             this.peer.kill('plugin disconnected');
         };
 
-        this.worker.on('close', () => {
-            logger.log('e', `${this.pluginName} close`);
-            disconnect();
-        });
         this.worker.on('exit', async (code, signal) => {
             logger.log('e', `${this.pluginName} exited ${code} ${signal}`);
             disconnect();
@@ -473,11 +469,12 @@ export class PluginHost {
         });
 
         socket.on('message', data => {
-            if (data.constructor === Buffer || data.constructor === ArrayBuffer) {
-                serializer.onMessageBuffer(Buffer.from(data));
+            if (typeof data === 'string') {
+                serializer.onMessageFinish(JSON.parse(data as string));
+
             }
             else {
-                serializer.onMessageFinish(JSON.parse(data as string));
+                serializer.onMessageBuffer(Buffer.from(data));
             }
         });
 

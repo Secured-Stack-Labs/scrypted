@@ -1,4 +1,5 @@
 import child_process from 'child_process';
+import { once } from 'events';
 import { EventEmitter } from "ws";
 import { RpcMessage, RpcPeer } from "../../rpc";
 import { RuntimeWorker, RuntimeWorkerOptions } from "./runtime-worker";
@@ -6,6 +7,7 @@ import { RuntimeWorker, RuntimeWorkerOptions } from "./runtime-worker";
 export abstract class ChildProcessWorker extends EventEmitter implements RuntimeWorker {
     public pluginId: string;
     protected worker: child_process.ChildProcess;
+    killPromise: Promise<void>;
 
     get childProcess() {
         return this.worker;
@@ -14,10 +16,11 @@ export abstract class ChildProcessWorker extends EventEmitter implements Runtime
     constructor(options: RuntimeWorkerOptions) {
         super();
         this.pluginId = options.packageJson.name;
+
     }
 
     setupWorker() {
-        this.worker.on('close', (code: number | null, signal: NodeJS.Signals | null) => this.emit('close', code, signal));
+        this.worker.on('close', () => this.emit('error', new Error('close')));
         this.worker.on('disconnect', () => this.emit('error', new Error('disconnect')));
         this.worker.on('exit', (code, signal) => this.emit('exit', code, signal));
         this.worker.on('error', e => this.emit('error', e));
@@ -27,6 +30,8 @@ export abstract class ChildProcessWorker extends EventEmitter implements Runtime
             if (stdio)
                 stdio.on('error', e => this.emit('error', e));
         }
+
+        this.killPromise = once(this.worker, 'exit').then(() => {}).catch(() => {});
     }
 
     get pid() {
@@ -42,10 +47,12 @@ export abstract class ChildProcessWorker extends EventEmitter implements Runtime
     }
 
     kill(): void {
-        if (!this.worker)
+        const { worker } = this;
+        if (!worker)
             return;
-        this.worker.kill('SIGKILL');
         this.worker = undefined;
+        worker.kill();
+        setTimeout(() => worker.kill('SIGKILL'), 1000);
     }
 
     abstract send(message: RpcMessage, reject?: (e: Error) => void): void;

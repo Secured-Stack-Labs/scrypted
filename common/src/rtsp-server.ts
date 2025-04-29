@@ -93,8 +93,15 @@ export const H265_NAL_TYPE_AGG = 48;
 export const H265_NAL_TYPE_VPS = 32;
 export const H265_NAL_TYPE_SPS = 33;
 export const H265_NAL_TYPE_PPS = 34;
-export const H265_NAL_TYPE_IDR_N = 19;
-export const H265_NAL_TYPE_IDR_W = 20;
+export const H265_NAL_TYPE_BLA_W_LP = 16;
+export const H265_NAL_TYPE_BLA_W_RADL = 17;
+export const H265_NAL_TYPE_BLA_N_LP = 18;
+export const H265_NAL_TYPE_IDR_W_RADL = 19;
+export const H265_NAL_TYPE_IDR_N_LP = 20;
+export const H265_NAL_TYPE_CRA_NUT = 21;
+export const H265_NAL_TYPE_FU = 49;
+export const H265_NAL_TYPE_SEI_PREFIX = 39;
+export const H265_NAL_TYPE_SEI_SUFFIX = 40;
 
 export function findH264NaluType(streamChunk: StreamChunk, naluType: number) {
     if (streamChunk.type !== 'h264')
@@ -161,10 +168,10 @@ export function findH265NaluTypeInNalu(nalu: Buffer, naluType: number) {
     return;
 }
 
-export function getNaluTypes(streamChunk: StreamChunk) {
+export function getStartedH264NaluTypes(streamChunk: StreamChunk) {
     if (streamChunk.type !== 'h264')
         return new Set<number>();
-    return getNaluTypesInNalu(streamChunk.chunks[streamChunk.chunks.length - 1].subarray(12))
+    return getNaluTypesInNalu(streamChunk.chunks[streamChunk.chunks.length - 1].subarray(12), true)
 }
 
 export function getNaluTypesInNalu(nalu: Buffer, fuaRequireStart = false, fuaRequireEnd = false) {
@@ -205,10 +212,10 @@ export function getNaluTypesInNalu(nalu: Buffer, fuaRequireStart = false, fuaReq
     return ret;
 }
 
-export function getH265NaluTypes(streamChunk: StreamChunk) {
+export function getStartedH265NaluTypes(streamChunk: StreamChunk) {
     if (streamChunk.type !== 'h265')
         return new Set<number>();
-    return getNaluTypesInH265Nalu(streamChunk.chunks[streamChunk.chunks.length - 1].subarray(12))
+    return getNaluTypesInH265Nalu(streamChunk.chunks[streamChunk.chunks.length - 1].subarray(12), true)
 }
 
 export function getNaluTypesInH265Nalu(nalu: Buffer, fuaRequireStart = false, fuaRequireEnd = false) {
@@ -216,7 +223,7 @@ export function getNaluTypesInH265Nalu(nalu: Buffer, fuaRequireStart = false, fu
     const naluType = parseH265NaluType(nalu[0]);
     if (naluType === H265_NAL_TYPE_AGG) {
         ret.add(H265_NAL_TYPE_AGG);
-        let pos = 1;
+        let pos = 2;
         while (pos < nalu.length) {
             const naluLength = nalu.readUInt16BE(pos);
             pos += 2;
@@ -225,12 +232,49 @@ export function getNaluTypesInH265Nalu(nalu: Buffer, fuaRequireStart = false, fu
             pos += naluLength;
         }
     }
+    else if (naluType === H265_NAL_TYPE_FU) {
+        ret.add(H265_NAL_TYPE_FU);
+        const fuaType = nalu[2] & 0x3F;  // 6 bits
+        if (fuaRequireStart) {
+            const isFuStart = !!(nalu[2] & 0x80);
+            if (isFuStart)
+                ret.add(fuaType);
+        }
+        else if (fuaRequireEnd) {
+            const isFuEnd = !!(nalu[2] & 0x40);
+            if (isFuEnd)
+                ret.add(fuaType);
+        }
+        else {
+            ret.add(fuaType);
+        }
+    }
     else {
         ret.add(naluType);
     }
 
     return ret;
 }
+
+export function isH265KeyFrameRelatedInSet(naluTypes: Set<number>, allowCodecInfo = true) {
+    if (naluTypes.has(H265_NAL_TYPE_IDR_N_LP)
+        || naluTypes.has(H265_NAL_TYPE_IDR_W_RADL)
+        || naluTypes.has(H265_NAL_TYPE_CRA_NUT)
+        || naluTypes.has(H265_NAL_TYPE_BLA_N_LP)
+        || naluTypes.has(H265_NAL_TYPE_BLA_W_LP)
+        || naluTypes.has(H265_NAL_TYPE_BLA_W_RADL)) {
+        return true;
+    }
+
+    if (allowCodecInfo) {
+        if (naluTypes.has(H265_NAL_TYPE_VPS)
+            || naluTypes.has(H265_NAL_TYPE_SPS)
+            || naluTypes.has(H265_NAL_TYPE_PPS))
+            return true;
+    }
+    return false;
+}
+
 
 export function createRtspParser(options?: StreamParserOptions): RtspStreamParser {
     let resolve: any;
@@ -255,20 +299,15 @@ export function createRtspParser(options?: StreamParserOptions): RtspStreamParse
             for (let prebufferIndex = 0; prebufferIndex < streamChunks.length; prebufferIndex++) {
                 const streamChunk = streamChunks[prebufferIndex];
                 if (streamChunk.type === 'h264') {
-                    const naluTypes = getNaluTypes(streamChunk);
+                    const naluTypes = getStartedH264NaluTypes(streamChunk);
                     if (naluTypes.has(H264_NAL_TYPE_SPS) || naluTypes.has(H264_NAL_TYPE_IDR)) {
                         return streamChunks.slice(prebufferIndex);
                     }
                 }
                 else if (streamChunk.type === 'h265') {
-                    const naluTypes = getH265NaluTypes(streamChunk);
+                    const naluTypes = getStartedH265NaluTypes(streamChunk);
 
-                    if (naluTypes.has(H265_NAL_TYPE_VPS)
-                        || naluTypes.has(H265_NAL_TYPE_SPS)
-                        || naluTypes.has(H265_NAL_TYPE_PPS)
-                        || naluTypes.has(H265_NAL_TYPE_IDR_N)
-                        || naluTypes.has(H265_NAL_TYPE_IDR_W)
-                    ) {
+                    if (isH265KeyFrameRelatedInSet(naluTypes)) {
                         return streamChunks.slice(prebufferIndex);
                     }
                 }
@@ -650,9 +689,12 @@ export class RtspClient extends RtspBase {
         // @ts-ignore
         const { parseHTTPHeadersQuotedKeyValueSet } = await import('http-auth-utils/dist/utils');
 
+        const authedUrl = new URL(this.url);
+        const username = decodeURIComponent(authedUrl.username);
+        const password = decodeURIComponent(authedUrl.password);
+
         if (this.wwwAuthenticate.includes('Basic')) {
-            const parsedUrl = new URL(this.url);
-            const hash = BASIC.computeHash({ username: parsedUrl.username, password: parsedUrl.password });
+            const hash = BASIC.computeHash({ username, password });
             return `Basic ${hash}`;
         }
 
@@ -671,10 +713,6 @@ export class RtspClient extends RtspBase {
             } as any,
             REQUIRED_WWW_AUTHENTICATE_KEYS,
         ) as DigestWWWAuthenticateData;
-
-        const authedUrl = new URL(this.url);
-        const username = decodeURIComponent(authedUrl.username);
-        const password = decodeURIComponent(authedUrl.password);
 
         const strippedUrl = new URL(url.toString());
         strippedUrl.username = '';

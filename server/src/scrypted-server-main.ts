@@ -12,10 +12,11 @@ import os from 'os';
 import path from 'path';
 import process from 'process';
 import { install as installSourceMapSupport } from 'source-map-support';
+import tls from 'tls';
 import { createSelfSignedCertificate, CURRENT_SELF_SIGNED_CERTIFICATE_VERSION } from './cert';
 import { getScryptedClusterMode } from './cluster/cluster-setup';
 import { Plugin, ScryptedUser, Settings } from './db-types';
-import { getUsableNetworkAddresses } from './ip';
+import { getUsableNetworkAddresses, removeIPv4EmbeddedIPv6 } from './ip';
 import Level from './level';
 import { getScryptedVolume } from './plugin/plugin-volume';
 import { ScryptedRuntime } from './runtime';
@@ -29,8 +30,24 @@ import { ONE_DAY_MILLISECONDS, UserToken } from './usertoken';
 
 export type Runtime = ScryptedRuntime;
 
-async function listenServerPort(env: string, port: number, server: http.Server | https.Server | net.Server, hostname?: string) {
-    server.listen(port, hostname);
+const listenSet = new net.BlockList();
+const { SCRYPTED_SERVER_LISTEN_HOSTNAMES } = process.env;
+if (SCRYPTED_SERVER_LISTEN_HOSTNAMES) {
+    // add ipv4 and ipv6 loopback
+    listenSet.addAddress('127.0.0.1');
+    listenSet.addAddress('::1', 'ipv6');
+    for (const hostname of SCRYPTED_SERVER_LISTEN_HOSTNAMES.split(',')) {
+        if (net.isIPv4(hostname))
+            listenSet.addAddress(hostname);
+        else if (net.isIPv6(hostname))
+            listenSet.addAddress(hostname, 'ipv6');
+        else
+            throw new Error('Invalid SCRYPTED_SERVER_LISTEN_HOSTNAME: ' + hostname);
+    }
+}
+
+async function listenServerPort(env: string, port: number, server: http.Server | https.Server | net.Server) {
+    server.listen(port);
     try {
         await once(server, 'listening');
     }
@@ -57,6 +74,11 @@ async function doconnect(): Promise<net.Socket> {
 }
 
 const debugServer = net.createServer(async (socket) => {
+    if (listenSet.rules.length && !checkListenSet(socket)) {
+        socket.destroy();
+        return;
+    }
+
     if (!workerInspectPort) {
         socket.destroy();
         return;
@@ -82,7 +104,8 @@ const debugServer = net.createServer(async (socket) => {
     }
     console.warn('debugger connect timed out');
     socket.destroy();
-})
+});
+
 listenServerPort('SCRYPTED_DEBUG_PORT', SCRYPTED_DEBUG_PORT, debugServer)
     .catch(() => { });
 
@@ -91,13 +114,27 @@ const app = express();
 app.set('trust proxy', 'loopback');
 
 // parse application/x-www-form-urlencoded
-app.use(bodyParser.urlencoded({ extended: false }) as any)
+app.use(bodyParser.urlencoded({ extended: false }) as any);
 
 // parse application/json
-app.use(bodyParser.json())
+app.use(bodyParser.json());
 
 // parse some custom thing into a Buffer
-app.use(bodyParser.raw({ type: 'application/*', limit: 100000000 }) as any)
+app.use(bodyParser.raw({ type: 'application/*', limit: 100000000 }) as any);
+
+function checkListenSet(socket: net.Socket) {
+    return listenSet.check(socket.localAddress, net.isIPv4(socket.localAddress) ? 'ipv4' : 'ipv6');
+}
+
+if (listenSet.rules.length) {
+    app.use((req, res, next) => {
+        if (!checkListenSet(req.socket)) {
+            res.status(403).send('Access denied on this address: ' + req.socket.localAddress);
+            return;
+        }
+        next();
+    });
+}
 
 async function start(mainFilename: string, options?: {
     onRuntimeCreated?: (runtime: ScryptedRuntime) => Promise<void>,
@@ -170,8 +207,6 @@ async function start(mainFilename: string, options?: {
         key: keyPair.serviceKey,
         cert: keyPair.certificate
     }, httpsServerOptions);
-    const secure = https.createServer(mergedHttpsServerOptions, app);
-    const insecure = http.createServer(app);
 
     // use a hash of the private key as the cookie secret.
     app.use(cookieParser(crypto.createHash('sha256').update(certSetting.value.serviceKey).digest().toString('hex')));
@@ -312,7 +347,7 @@ async function start(mainFilename: string, options?: {
     });
 
     // all methods under /web/component require admin auth.
-    app.all('/web/component/*', (req, res, next) => {
+    app.all('/web/component/*ignored', (req, res, next) => {
         // check if the user is admin authed already, and if not, continue on with basic auth to escalate.
         // this will cover anonymous access like in demo site.
         if (res.locals.username && !res.locals.aclId) {
@@ -342,7 +377,7 @@ async function start(mainFilename: string, options?: {
     });
 
     // verify all plugin related requests have admin auth
-    app.all('/web/component/*', (req, res, next) => {
+    app.all('/web/component/*ignored', (req, res, next) => {
         if (!res.locals.username || res.locals.aclId) {
             res.status(401);
             res.send('Not Authorized');
@@ -351,7 +386,7 @@ async function start(mainFilename: string, options?: {
         next();
     });
 
-    const scrypted = new ScryptedRuntime(mainFilename, db, insecure, secure, app);
+    const scrypted = new ScryptedRuntime(mainFilename, db, app);
     if (options?.serviceControl)
         scrypted.serviceControl = options.serviceControl;
     await options?.onRuntimeCreated?.(scrypted);
@@ -359,8 +394,7 @@ async function start(mainFilename: string, options?: {
     const clusterMode = getScryptedClusterMode();
     if (clusterMode?.[0] === 'server') {
         console.log('Cluster server starting.');
-        const clusterServer = createClusterServer(mainFilename, scrypted, keyPair);
-        await listenServerPort('SCRYPTED_CLUSTER_SERVER', clusterMode[2], clusterServer);
+        await listenServerPort('SCRYPTED_CLUSTER_SERVER', clusterMode[2], createClusterServer(mainFilename, scrypted, keyPair));
     }
 
     await scrypted.start();
@@ -745,13 +779,24 @@ async function start(mainFilename: string, options?: {
 
     app.get('/', (_req, res) => res.redirect('./endpoint/@scrypted/core/public/'));
 
-    await listenServerPort('SCRYPTED_SECURE_PORT', SCRYPTED_SECURE_PORT, secure);
-    await listenServerPort('SCRYPTED_INSECURE_PORT', SCRYPTED_INSECURE_PORT, insecure);
+    const hookUpgrade = (server: net.Server | tls.Server) => {
+        server.on('upgrade', (req, socket, upgradeHead) => {
+            (req as any).upgradeHead = upgradeHead;
+            (app as any).handle(req, {
+                socket,
+                upgradeHead
+            })
+        });
+        return server;
+    }
+
+    await listenServerPort('SCRYPTED_SECURE_PORT', SCRYPTED_SECURE_PORT, hookUpgrade(https.createServer(mergedHttpsServerOptions, app)));
+    await listenServerPort('SCRYPTED_INSECURE_PORT', SCRYPTED_INSECURE_PORT, hookUpgrade(http.createServer(app)));
 
     console.log('#######################################################');
     console.log(`Scrypted Volume           : ${volumeDir}`);
     console.log(`Scrypted Server (Local)   : https://localhost:${SCRYPTED_SECURE_PORT}/`);
-    for (const address of getUsableNetworkAddresses()) {
+    for (const address of SCRYPTED_SERVER_LISTEN_HOSTNAMES ? SCRYPTED_SERVER_LISTEN_HOSTNAMES.split(',') : getUsableNetworkAddresses()) {
         console.log(`Scrypted Server (Remote)  : https://${address}:${SCRYPTED_SECURE_PORT}/`);
     }
     console.log(`Version:       : ${await scrypted.info.getVersion()}`);

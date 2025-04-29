@@ -6,7 +6,7 @@
 # This common file will be used by both Docker and the linux
 # install script.
 ################################################################
-ARG BASE="jammy"
+ARG BASE="noble"
 FROM ubuntu:${BASE} as header
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get -y install \
     apt-get -y update && \
     apt-get -y upgrade
 
-ARG NODE_VERSION=20
+ARG NODE_VERSION=22
 RUN apt-get install -y ca-certificates curl gnupg
 RUN mkdir -p /etc/apt/keyrings
 RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg

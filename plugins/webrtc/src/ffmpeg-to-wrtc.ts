@@ -3,14 +3,15 @@ import { MediaStreamTrack, PeerConfig, RTCPeerConnection, RTCRtpCodecParameters,
 import { Deferred } from "@scrypted/common/src/deferred";
 import sdk, { FFmpegInput, FFmpegTranscodeStream, Intercom, MediaObject, MediaStreamDestination, MediaStreamFeedback, RequestMediaStream, RTCAVSignalingSetup, RTCConnectionManagement, RTCInputMediaObjectTrack, RTCOutputMediaObjectTrack, RTCSignalingOptions, RTCSignalingSession, ScryptedDevice, ScryptedMimeTypes } from "@scrypted/sdk";
 import { ScryptedSessionControl } from "./session-control";
-import { opusAudioCodecOnly, requiredAudioCodecs, requiredVideoCodec } from "./webrtc-required-codecs";
+import { optionalVideoCodec, opusAudioCodecOnly, requiredAudioCodecs, requiredVideoCodec } from "./webrtc-required-codecs";
 import { logIsLocalIceTransport } from "./werift-util";
 
 import { addVideoFilterArguments } from "@scrypted/common/src/ffmpeg-helpers";
 import { connectRTCSignalingClients, legacyGetSignalingSessionOptions } from "@scrypted/common/src/rtc-signaling";
-import { getSpsPps } from "@scrypted/common/src/sdp-utils";
+import { getSpsPps, getSpsPpsVps, MSection } from "@scrypted/common/src/sdp-utils";
 import { H264Repacketizer } from "../../homekit/src/types/camera/h264-packetizer";
 import { OpusRepacketizer } from "../../homekit/src/types/camera/opus-repacketizer";
+import { H265Repacketizer } from "./h265-packetizer";
 import { logConnectionState, waitClosed, waitConnected, waitIceConnected } from "./peerconnection-util";
 import { RtpCodecCopy, RtpTrack, RtpTracks, startRtpForwarderProcess } from "./rtp-forwarders";
 import { getAudioCodec, getFFmpegRtpAudioOutputArguments } from "./webrtc-required-codecs";
@@ -68,16 +69,29 @@ export async function createTrackForwarder(options: {
         requestDestination = 'remote';
     }
 
+    const hasH265Support = !!videoTransceiver.codecs.find(codec => codec.mimeType === 'video/H265');
+
     const mo = await requestMediaStream({
         video: {
+            // prefer h264 if available
+            // todo: change this to h265 primary after some time to allow plugins to update to new
+            // alternateCodecs property.
             codec: 'h264',
+            // allow h265 if supported
+            alternateCodecs: hasH265Support ? ['h265', 'h264'] : undefined,
             width,
             height,
         },
         audio: {
             codec: 'opus',
+            alternateCodecs: ['opus', 'pcm_mulaw', 'pcm_alaw'],
         },
-        adaptive: handlesHighResolution,
+        adaptive: handlesHighResolution
+            ? {
+                codecSwitch: true,
+                pictureLoss: true,
+            }
+            : undefined,
         destination: requestDestination,
         destinationId,
         tool: !handlesHighResolution ? 'ffmpeg' : 'scrypted',
@@ -126,16 +140,44 @@ export async function createTrackForwarder(options: {
         ...clientOptions,
     });
 
+    const findAndSetCodec = (transceiver: RTCRtpTransceiver, mimeType: string) => {
+        const found = transceiver.codecs.find(codec => codec.mimeType === mimeType);
+        if (found)
+            transceiver.sender.codec = found;
+        return found;
+    };
+
+    const codecMap = {
+        'audio/PCMU': 'pcm_mulaw',
+        'audio/PCMA': 'pcm_alaw',
+        'audio/opus': 'opus',
+        'video/H264': 'h264',
+        'video/H265': 'h265',
+    };
+
+    const codecReverseMap = {
+        'pcm_mulaw': 'audio/PCMU',
+        'pcm_alaw': 'audio/PCMA',
+        'opus': 'audio/opus',
+        'h264': 'video/H264',
+        'h265': 'video/H265',
+    }
+
+    let willNeedTranscode = mediaStreamOptions?.video?.codec !== 'h264';
     if (!maximumCompatibilityMode) {
-        let found: RTCRtpCodecParameters;
         if (mediaStreamOptions?.audio?.codec === 'pcm_mulaw') {
-            found = audioTransceiver.codecs.find(codec => codec.mimeType === 'audio/PCMU')
+            findAndSetCodec(audioTransceiver, 'audio/PCMU');
         }
         else if (mediaStreamOptions?.audio?.codec === 'pcm_alaw') {
-            found = audioTransceiver.codecs.find(codec => codec.mimeType === 'audio/PCMA')
+            findAndSetCodec(audioTransceiver, 'audio/PCMA');
         }
-        if (found)
-            audioTransceiver.sender.codec = found;
+
+        if (mediaStreamOptions?.video?.codec === 'h265') {
+            if (hasH265Support) {
+                findAndSetCodec(videoTransceiver, 'video/H265');
+                willNeedTranscode = false;
+            }
+        }
     }
 
     const { name: audioCodecName } = getAudioCodec(audioTransceiver.sender.codec);
@@ -143,23 +185,24 @@ export async function createTrackForwarder(options: {
 
     const videoTranscodeArguments: string[] = [];
     const transcode = transcodeBaseline
-        || mediaStreamOptions?.video?.codec !== 'h264'
-        || ffmpegInput.h264EncoderArguments?.length
-        || ffmpegInput.h264FilterArguments?.length;
+        || willNeedTranscode;
 
     // let videoCodecCopy: RtpCodecCopy = transcode ? undefined : 'h264';
     const compatibleH264 = !mediaStreamOptions?.video?.h264Info?.reserved30 && !mediaStreamOptions?.video?.h264Info?.reserved31;
     let videoCodecCopy: RtpCodecCopy;
-    if (!transcode && compatibleH264)
-        videoCodecCopy = 'h264';
+    if (!transcode && compatibleH264) {
+        if (mediaStreamOptions?.video?.codec === 'h264')
+            videoCodecCopy = 'h264';
+        else if (mediaStreamOptions?.video?.codec === 'h265')
+            videoCodecCopy = 'h265';
+    }
 
     if (ffmpegInput.mediaStreamOptions?.oobCodecParameters)
         videoTranscodeArguments.push("-bsf:v", "dump_extra");
-    videoTranscodeArguments.push(...(ffmpegInput.h264FilterArguments || []));
 
     if (transcode) {
         const conservativeDefaultBitrate = isLocalNetwork ? 1000000 : 500000;
-        const bitrate = maximumCompatibilityMode ? conservativeDefaultBitrate : (ffmpegInput.destinationVideoBitrate || conservativeDefaultBitrate);
+        const bitrate = maximumCompatibilityMode ? conservativeDefaultBitrate : conservativeDefaultBitrate;
         videoTranscodeArguments.push(
             // this seems to cause issues with presets i think.
             // '-level:v', '4.0',
@@ -186,7 +229,7 @@ export async function createTrackForwarder(options: {
             // videoArgs.push('-tune', 'zerolatency');
         }
         else {
-            videoTranscodeArguments.push(...(ffmpegInput.h264EncoderArguments || getDebugModeH264EncoderArgs()));
+            videoTranscodeArguments.push(...getDebugModeH264EncoderArgs());
         }
     }
     else {
@@ -200,7 +243,6 @@ export async function createTrackForwarder(options: {
         try {
             const transcodeStream: FFmpegTranscodeStream = await sdk.mediaManager.convertMediaObject(mo, ScryptedMimeTypes.FFmpegTranscodeStream);
             await transcodeStream({
-                videoDecoderArguments: ffmpegInput.videoDecoderArguments,
                 videoTranscodeArguments,
                 audioTranscodeArguments,
             });
@@ -237,7 +279,8 @@ export async function createTrackForwarder(options: {
             return msection.rtpmap.clock === 8000;
         },
         // codecCopy: audioCodecCopy,
-        onRtp: buffer => {
+        alternateCodecs: ['opus', 'pcm_mulaw', 'pcm_alaw'],
+        onRtp: (buffer, codec) => {
             if (false && audioTransceiver.sender.codec.mimeType?.toLowerCase() === "audio/opus") {
                 // this will use 3 20ms frames, 60ms. seems to work up to 6/120ms
                 if (!opusRepacketizer)
@@ -247,6 +290,8 @@ export async function createTrackForwarder(options: {
                 }
             }
             else {
+                if (codecMap[audioTransceiver.sender.codec.mimeType] !== codec)
+                    findAndSetCodec(audioTransceiver, codecReverseMap[codec]);
                 const rtp = RtpPacket.deSerialize(buffer);
                 const now = Date.now();
                 rtp.header.marker = now - lastPacketTs > 1000; // set the marker if it's been more than 1s since the last packet
@@ -295,38 +340,52 @@ export async function createTrackForwarder(options: {
     // So using Chrome's 1200 seems best, though crappy.
     // https://iotdevices.att.com/att-iot/FirstNetMTU.aspx
     const videoPacketSize = 1200;
-    let h264Repacketizer: H264Repacketizer;
-    let spsPps: ReturnType<typeof getSpsPps>;
+    let repacketizer: H264Repacketizer | H265Repacketizer;
+    let videoSection: MSection;
 
     const videoRtpTrack: RtpTrack = {
         codecCopy: videoCodecCopy,
+        alternateCodecs: hasH265Support ? ['h264', 'h265'] : undefined,
         packetSize: videoPacketSize,
-        onMSection: (videoSection) => spsPps = getSpsPps(videoSection),
-        onRtp: (buffer) => {
-            let onRtp: (rtp: Buffer) => void;
+        onMSection: (v) => videoSection = v,
+        onRtp: (buffer, codec) => {
+            let onRtp: typeof videoRtpTrack.onRtp;
 
-            if (needPacketization) {
-                if (!h264Repacketizer) {
+            if (needPacketization && !repacketizer) {
+                if (videoSection.codec === 'h264') {
+                    const spsPps = getSpsPps(videoSection);
                     // adjust packet size for the rtp packet header (12).
-                    h264Repacketizer = new H264Repacketizer(console, videoPacketSize - 12, {
+                    repacketizer = new H264Repacketizer(console, videoPacketSize - 12, {
                         ...spsPps,
                     });
                 }
-                onRtp = buffer => {
-                    const repacketized = h264Repacketizer.repacketize(RtpPacket.deSerialize(buffer));
+                else if (videoSection.codec === 'h265') {
+                    const spsPpsVps = getSpsPpsVps(videoSection);
+                    // adjust packet size for the rtp packet header (12).
+                    repacketizer = new H265Repacketizer(console, videoPacketSize - 12, {
+                        ...spsPpsVps,
+                    });
+                }
+
+                onRtp = (buffer, codec) => {
+                    if (codecMap[videoTransceiver.sender.codec.mimeType] !== codec)
+                        findAndSetCodec(videoTransceiver, codecReverseMap[codec]);
+                    const repacketized = repacketizer.repacketize(RtpPacket.deSerialize(buffer));
                     for (const packet of repacketized) {
                         videoTransceiver.sender.sendRtp(packet);
                     }
                 };
             }
             else {
-                onRtp = buffer => {
+                onRtp = (buffer, codec) => {
+                    if (codecMap[videoTransceiver.sender.codec.mimeType] !== codec)
+                        findAndSetCodec(videoTransceiver, codecReverseMap[codec]);
                     videoTransceiver.sender.sendRtp(buffer);
                 };
             }
 
             videoRtpTrack.onRtp = onRtp;
-            videoRtpTrack.onRtp(buffer);
+            videoRtpTrack.onRtp(buffer, codec);
         },
         encoderArguments: [
             ...videoTranscodeArguments,
@@ -399,7 +458,13 @@ export function parseOptions(options: RTCSignalingOptions) {
     if (options?.userAgent?.includes('Firefox/'))
         sessionSupportsH264High = true;
 
-    const transcodeWidth = Math.max(640, Math.min(options?.screen?.width || 960, 1280));
+    // Some devices return a `screen width` value that is not a multiple of 2, which is not allowed for the h264 codec.
+    // Convert to a smaller even value.
+    const screenWidthForTranscodeH264 = !options?.screen?.width 
+    ? 960 
+    : Math.trunc(options?.screen?.width / 2) * 2;
+
+    const transcodeWidth = Math.max(640, Math.min(screenWidthForTranscodeH264, 1280));
     const devicePixelRatio = options?.screen?.devicePixelRatio || 1;
     const width = (options?.screen?.width * devicePixelRatio) || undefined;
     const height = (options?.screen?.height * devicePixelRatio) || undefined;
@@ -499,6 +564,7 @@ export class WebRTCConnectionManagement implements RTCConnectionManagement {
                 ],
                 video: [
                     requiredVideoCodec,
+                    optionalVideoCodec,
                 ],
             },
             ...options.weriftConfiguration,
@@ -526,7 +592,7 @@ export class WebRTCConnectionManagement implements RTCConnectionManagement {
         const intercom = sdk.systemManager.getDeviceById<Intercom>(intercomId);
 
         const vtrack = new MediaStreamTrack({
-            kind: "video", codec: requiredVideoCodec,
+            kind: "video",
         });
 
         const atrack = new MediaStreamTrack({ kind: "audio" });

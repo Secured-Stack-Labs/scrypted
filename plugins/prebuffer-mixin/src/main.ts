@@ -1,8 +1,7 @@
 import { AutoenableMixinProvider } from '@scrypted/common/src/autoenable-mixin-provider';
-import { addVideoFilterArguments } from '@scrypted/common/src/ffmpeg-helpers';
 import { ListenZeroSingleClientTimeoutError, closeQuiet, listenZeroSingleClient } from '@scrypted/common/src/listen-cluster';
 import { readLength } from '@scrypted/common/src/read-stream';
-import { H264_NAL_TYPE_FU_B, H264_NAL_TYPE_IDR, H264_NAL_TYPE_MTAP16, H264_NAL_TYPE_MTAP32, H264_NAL_TYPE_RESERVED0, H264_NAL_TYPE_RESERVED30, H264_NAL_TYPE_RESERVED31, H264_NAL_TYPE_SEI, H264_NAL_TYPE_SPS, H264_NAL_TYPE_STAP_B, RtspServer, RtspTrack, createRtspParser, findH264NaluType, getNaluTypes, listenSingleRtspClient } from '@scrypted/common/src/rtsp-server';
+import { H264_NAL_TYPE_FU_B, H264_NAL_TYPE_IDR, H264_NAL_TYPE_MTAP16, H264_NAL_TYPE_MTAP32, H264_NAL_TYPE_RESERVED0, H264_NAL_TYPE_RESERVED30, H264_NAL_TYPE_RESERVED31, H264_NAL_TYPE_SEI, H264_NAL_TYPE_SPS, H264_NAL_TYPE_STAP_B, RtspServer, RtspTrack, createRtspParser, findH264NaluType, getStartedH264NaluTypes, listenSingleRtspClient } from '@scrypted/common/src/rtsp-server';
 import { addTrackControls, getSpsPps, parseSdp } from '@scrypted/common/src/sdp-utils';
 import { SettingsMixinDeviceBase, SettingsMixinDeviceOptions } from "@scrypted/common/src/settings-mixin";
 import { sleep } from '@scrypted/common/src/sleep';
@@ -627,9 +626,8 @@ class PrebufferSession {
         // extraOutputArguments must contain full codec information
         if (extraOutputArguments) {
           vcodec = [...extraOutputArguments.split(' ').filter(d => !!d)];
+          acodec = [];
         }
-        if (ffmpegInput.h264FilterArguments)
-          vcodec.push(...ffmpegInput.h264FilterArguments)
 
         const rtspParser = createRtspParser({
           vcodec,
@@ -658,7 +656,7 @@ class PrebufferSession {
         if (chunk.type !== 'h264')
           return;
 
-        const types = getNaluTypes(chunk);
+        const types = getStartedH264NaluTypes(chunk);
         h264Probe.fuab ||= types.has(H264_NAL_TYPE_FU_B);
         h264Probe.stapb ||= types.has(H264_NAL_TYPE_STAP_B);
         h264Probe.mtap16 ||= types.has(H264_NAL_TYPE_MTAP16);
@@ -1002,7 +1000,7 @@ class PrebufferSession {
       // prebuffer search for remote streaming should be even more conservative than local network.
       const defaultPrebuffer = options?.destination === 'remote' ? 2000 : 4000;
       // try to gaurantee a sync frame, but don't search too much prebuffer to make it happen.
-      requestedPrebuffer = Math.min(defaultPrebuffer, this.getDetectedIdrInterval() || defaultPrebuffer);;
+      requestedPrebuffer = Math.min(defaultPrebuffer, this.getDetectedIdrInterval() || defaultPrebuffer);
     }
 
     const codecInfo = await this.parseCodecs(true);
@@ -1027,8 +1025,11 @@ class PrebufferSession {
     const parsedSdp = parseSdp(sdp);
     const videoSection = parsedSdp.msections.find(msection => msection.codec && msection.codec === mediaStreamOptions.video?.codec) || parsedSdp.msections.find(msection => msection.type === 'video');
     let audioSection = parsedSdp.msections.find(msection => msection.codec && msection.codec === mediaStreamOptions.audio?.codec) || parsedSdp.msections.find(msection => msection.type === 'audio');
+    // ensure the mso and sdp both reflect audio mute, or no audio found (which can be an upstream plugin error)
     if (mediaStreamOptions.audio === null)
       audioSection = undefined;
+    if (!audioSection)
+      mediaStreamOptions.audio = null;
     parsedSdp.msections = parsedSdp.msections.filter(msection => msection === videoSection || msection === audioSection);
     const filterPrebufferAudio = options?.prebuffer === undefined;
     const videoCodec = parsedSdp.msections.find(msection => msection.type === 'video')?.codec;
@@ -1123,8 +1124,7 @@ class PrebufferSession {
       session,
       filter,
     });
-
-    mediaStreamOptions.prebuffer = requestedPrebuffer;
+    mediaStreamOptions.prebuffer = 0;
 
     if (audioSection) {
       mediaStreamOptions.audio ||= {};
@@ -1144,6 +1144,8 @@ class PrebufferSession {
     for (const prebuffer of prebufferContainer) {
       if (prebuffer.time < now - requestedPrebuffer)
         continue;
+      if (!mediaStreamOptions.prebuffer)
+        mediaStreamOptions.prebuffer = now - prebuffer.time;
       for (const chunk of prebuffer.chunks) {
         available += chunk.length;
       }
@@ -1183,8 +1185,33 @@ class PrebufferMixin extends SettingsMixinDeviceBase<VideoCamera> implements Vid
   settingsListener: EventListenerRegister;
   videoCameraListener: EventListenerRegister;
 
-  constructor(public getTranscodeStorageSettings: () => Promise<any>, options: SettingsMixinDeviceOptions<VideoCamera & VideoCameraConfiguration>) {
+  constructor(options: SettingsMixinDeviceOptions<VideoCamera & VideoCameraConfiguration>) {
     super(options);
+
+    const rebroadcast = systemManager.getDeviceById('@scrypted/prebuffer-mixin').id;
+    const expected: string[] = [rebroadcast];
+
+    const webrtc = systemManager.getDeviceById('@scrypted/webrtc');
+    if (webrtc && this.providedInterfaces.includes(ScryptedInterface.RTCSignalingChannel))
+      expected.unshift(webrtc.id);
+
+    let matched = true;
+    for (let i = 0; i < expected.length; i++) {
+      if (this.mixins[i] !== expected[i]) {
+        matched = false;
+        break;
+      }
+    }
+
+    if (!matched) {
+      this.console.warn('rebroadcast/webrtc order not matched. this may cause flapping on interface changes. fixing.');
+      setTimeout(() => {
+        const currentMixins = this.mixins.filter(mixin => !expected.includes(mixin));
+        currentMixins.unshift(...expected);
+        const realDevice = systemManager.getDeviceById(this.id);
+        realDevice.setMixins(currentMixins);
+      }, 1000);
+    }
 
     this.delayStart();
 
@@ -1299,9 +1326,6 @@ class PrebufferMixin extends SettingsMixinDeviceBase<VideoCamera> implements Vid
     let id = options?.id;
     if (!this.sessions.has(id))
       id = undefined;
-    let h264EncoderArguments: string[];
-    let videoFilterArguments: string;
-    let destinationVideoBitrate: number;
 
     const msos = await this.mixinDevice.getVideoStreamOptions();
     let result: {
@@ -1310,31 +1334,23 @@ class PrebufferMixin extends SettingsMixinDeviceBase<VideoCamera> implements Vid
       title: string;
     };
 
-    const transcodeStorageSettings = await this.getTranscodeStorageSettings();
-    const defaultLocalBitrate = 2000000;
-    const defaultLowResolutionBitrate = 512000;
     if (!id) {
       switch (options?.destination) {
         case 'medium-resolution':
         case 'remote':
           result = this.streamSettings.getRemoteStream(msos);
-          destinationVideoBitrate = transcodeStorageSettings.remoteStreamingBitrate;
           break;
         case 'low-resolution':
           result = this.streamSettings.getLowResolutionStream(msos);
-          destinationVideoBitrate = defaultLowResolutionBitrate;
           break;
         case 'local-recorder':
           result = this.streamSettings.getRecordingStream(msos);
-          destinationVideoBitrate = defaultLocalBitrate;
           break;
         case 'remote-recorder':
           result = this.streamSettings.getRemoteRecordingStream(msos);
-          destinationVideoBitrate = defaultLocalBitrate;
           break;
         case 'local':
           result = this.streamSettings.getDefaultStream(msos);
-          destinationVideoBitrate = defaultLocalBitrate;
           break;
         default:
           const width = options?.video?.width;
@@ -1343,20 +1359,16 @@ class PrebufferMixin extends SettingsMixinDeviceBase<VideoCamera> implements Vid
           if (max) {
             if (max > 1280) {
               result = this.streamSettings.getDefaultStream(msos);
-              destinationVideoBitrate = defaultLocalBitrate;
             }
             else if (max > 720) {
               result = this.streamSettings.getRemoteStream(msos);
-              destinationVideoBitrate = transcodeStorageSettings.remoteStreamingBitrate;
             }
             else {
               result = this.streamSettings.getLowResolutionStream(msos);
-              destinationVideoBitrate = defaultLowResolutionBitrate;
             }
           }
           else {
             result = this.streamSettings.getDefaultStream(msos);
-            destinationVideoBitrate = defaultLocalBitrate;
           }
           break;
       }
@@ -1370,14 +1382,6 @@ class PrebufferMixin extends SettingsMixinDeviceBase<VideoCamera> implements Vid
       throw new Error('stream not found');
 
     ffmpegInput = await session.getVideoStream(true, options);
-
-    ffmpegInput.h264EncoderArguments = h264EncoderArguments;
-    ffmpegInput.destinationVideoBitrate = destinationVideoBitrate;
-
-    if (ffmpegInput.h264FilterArguments && videoFilterArguments)
-      addVideoFilterArguments(ffmpegInput.h264FilterArguments, videoFilterArguments)
-    else if (videoFilterArguments)
-      ffmpegInput.h264FilterArguments = ['-filter_complex', videoFilterArguments];
 
     return mediaManager.createFFmpegMediaObject(ffmpegInput, {
       sourceId: this.id,
@@ -1627,18 +1631,6 @@ export class RebroadcastPlugin extends AutoenableMixinProvider implements MixinP
     }
   });
 
-  transcodeStorageSettings = new StorageSettings(this, {
-    remoteStreamingBitrate: {
-      group: 'Advanced',
-      title: 'Remote Streaming Bitrate',
-      type: 'number',
-      defaultValue: 500000,
-      description: 'The bitrate to use when remote streaming. This setting will only be used when transcoding or adaptive bitrate is enabled on a camera.',
-      onPut() {
-        sdk.deviceManager.onDeviceEvent('transcode', ScryptedInterface.Settings, undefined);
-      },
-    },
-  });
   currentMixins = new Map<PrebufferMixin, {
     worker: ForkWorker,
     id: string,
@@ -1679,13 +1671,10 @@ export class RebroadcastPlugin extends AutoenableMixinProvider implements MixinP
   async getSettings(): Promise<Setting[]> {
     return [
       ...await this.storageSettings.getSettings(),
-      ...await this.transcodeStorageSettings.getSettings(),
     ];
   }
 
   putSetting(key: string, value: SettingValue): Promise<void> {
-    if (this.transcodeStorageSettings.keys[key])
-      return this.transcodeStorageSettings.putSetting(key, value);
     return this.storageSettings.putSetting(key, value);
   }
 
@@ -1749,6 +1738,10 @@ export class RebroadcastPlugin extends AutoenableMixinProvider implements MixinP
     return device.type === ScryptedDeviceType.Camera || device.type === ScryptedDeviceType.Doorbell;
   }
 
+  shouldUnshiftMixin(device: ScryptedDevice): boolean {
+    return device.providedInterfaces.includes(ScryptedInterface.VideoCamera);
+  }
+
   async canMixin(type: ScryptedDeviceType, interfaces: string[]): Promise<string[]> {
     if (type !== ScryptedDeviceType.Doorbell && type !== ScryptedDeviceType.Camera)
       return;
@@ -1765,7 +1758,7 @@ export class RebroadcastPlugin extends AutoenableMixinProvider implements MixinP
     const forked = sdk.fork<RebroadcastPluginFork>();
     const { worker } = forked;
     const result = await forked.result;
-    const mixin = await result.newPrebufferMixin(async () => this.transcodeStorageSettings.values, mixinDevice, mixinDeviceInterfaces, mixinDeviceState);
+    const mixin = await result.newPrebufferMixin(mixinDevice, mixinDeviceInterfaces, mixinDeviceState);
     this.currentMixins.set(mixin, {
       worker,
       id,
@@ -1782,8 +1775,8 @@ export class RebroadcastPlugin extends AutoenableMixinProvider implements MixinP
   }
 }
 
-async function newPrebufferMixin(getTranscodeStorageSettings: () => Promise<any>, mixinDevice: any, mixinDeviceInterfaces: ScryptedInterface[], mixinDeviceState: WritableDeviceState) {
-  return new PrebufferMixin(getTranscodeStorageSettings, {
+async function newPrebufferMixin(mixinDevice: any, mixinDeviceInterfaces: ScryptedInterface[], mixinDeviceState: WritableDeviceState) {
+  return new PrebufferMixin({
     mixinDevice,
     mixinDeviceState,
     mixinProviderNativeId: undefined,

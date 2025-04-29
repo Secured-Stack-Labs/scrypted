@@ -31,17 +31,17 @@ export interface ScryptedDevice {
   id: string;
   nativeId?: ScryptedNativeId;
   pluginId: string;
-  interfaces: string[];
+  interfaces: (ScryptedInterface | string)[];
   mixins: string[];
   name?: string;
   info?: DeviceInformation;
-  providedInterfaces: string[];
-  providedName?: ScryptedDeviceType;
+  providedInterfaces: (ScryptedInterface | string)[];
+  providedName?: string;
   providedRoom?: string;
-  providedType?: ScryptedDeviceType;
+  providedType?: ScryptedDeviceType | string;
   providerId?: string;
   room?: string;
-  type?: ScryptedDeviceType;
+  type?: ScryptedDeviceType | string;
 }
 export interface ScryptedPlugin {
   getPluginJson(): Promise<any>;
@@ -98,7 +98,14 @@ export interface EventListenerRegister {
  * @category Core Reference
  */
 export enum ScryptedDeviceType {
+  /**
+   * @deprecated
+   */
   Builtin = "Builtin",
+  /**
+   * Internal devices will not show up in device lists unless explicitly searched.
+   */
+  Internal = "Internal",
   Camera = "Camera",
   Fan = "Fan",
   Light = "Light",
@@ -126,6 +133,7 @@ export enum ScryptedDeviceType {
    * Smart Speakers have two way audio.
    */
   SmartSpeaker = "SmartSpeaker",
+  RemoteDesktop = "RemoteDesktop",
   Event = "Event",
   Entry = "Entry",
   Garage = "Garage",
@@ -140,6 +148,9 @@ export enum ScryptedDeviceType {
   WindowCovering = "WindowCovering",
   Siren = "Siren",
   AirPurifier = "AirPurifier",
+  Internet = "Internet",
+  Network = "Network",
+  Bridge = "Bridge",
   Unknown = "Unknown",
 }
 /**
@@ -488,9 +499,16 @@ export interface VideoStreamOptions {
   h264Info?: H264Info;
 }
 
-export interface RequestVideoStreamOptions extends VideoStreamOptions {
+export interface RequestStreamOptions {
+  alternateCodecs?: string[];
+}
+
+export interface RequestVideoStreamOptions extends RequestStreamOptions, VideoStreamOptions {
   clientWidth?: number;
   clientHeight?: number;
+}
+
+export interface RequestAudioStreamOptions extends RequestStreamOptions, AudioStreamOptions {
 }
 
 export interface AudioStreamOptions {
@@ -579,6 +597,7 @@ export interface RequestMediaStreamAdaptiveOptions {
   keyframe?: boolean;
   reconfigure?: boolean;
   resize?: boolean;
+  codecSwitch?: boolean;
 }
 
 export interface RequestMediaStreamOptions extends MediaStreamOptions {
@@ -627,6 +646,7 @@ export interface RequestMediaStreamOptions extends MediaStreamOptions {
   adaptive?: boolean | RequestMediaStreamAdaptiveOptions;
 
   video?: RequestVideoStreamOptions;
+  audio?: RequestAudioStreamOptions;
 }
 
 export interface MediaStreamPacketLoss {
@@ -1250,7 +1270,7 @@ export interface DiscoveredDevice {
    */
   description: string;
   nativeId: ScryptedNativeId;
-  type: ScryptedDeviceType;
+  type: ScryptedDeviceType | string;
   interfaces?: string[];
   info?: DeviceInformation;
   settings?: Setting[];
@@ -1416,6 +1436,7 @@ export interface ScryptedSystemDeviceInfo {
    * For example: Example Corp Camera or ACME Light Switch.
    */
   deviceCreator?: string;
+  deviceDiscovery?: string;
 }
 
 export interface ScryptedSettings {
@@ -1719,9 +1740,7 @@ export interface Image {
 export interface VideoFrame {
   __json_copy_serialize_children: true;
   timestamp: number;
-  queued: number;
   image: Image & MediaObject;
-  flush(count?: number): Promise<void>;
 }
 export interface VideoFrameGeneratorOptions extends ImageOptions {
   queue?: number;
@@ -1919,10 +1938,10 @@ export interface FFmpegInput extends MediaContainer {
    */
   urls?: string[];
   inputArguments?: string[];
-  destinationVideoBitrate?: number;
+  /**
+   * @deprecated Rebroadast use only.
+   */
   h264EncoderArguments?: string[];
-  videoDecoderArguments?: string[];
-  h264FilterArguments?: string[];
   /**
    * Environment variables to set when launching FFmpeg.
    */
@@ -1946,6 +1965,7 @@ export interface DeviceInformation {
     apple?: string;
     android?: string;
   };
+  description?: string;
 }
 /**
  * Device objects are created by DeviceProviders when new devices are discover and synced to Scrypted via the DeviceManager.
@@ -1958,7 +1978,7 @@ export interface Device {
    * The native id that is used by the DeviceProvider used to internally identify provided devices.
    */
   nativeId: ScryptedNativeId;
-  type: ScryptedDeviceType;
+  type: ScryptedDeviceType | string;
   interfaces: string[];
   info?: DeviceInformation;
   /**
@@ -2144,7 +2164,7 @@ export interface MixinProvider {
   /**
    * Called by the system to determine if this provider can create a mixin for the supplied device. Returns null if a mixin can not be created, otherwise returns a list of new interfaces (which may be an empty list) that are provided by the mixin.
    */
-  canMixin(type: ScryptedDeviceType, interfaces: string[]): Promise<string[] | null | undefined | void>;
+  canMixin(type: ScryptedDeviceType | string, interfaces: string[]): Promise<string[] | null | undefined | void>;
 
   /**
    * Create a mixin that can be applied to the supplied device.
@@ -2250,13 +2270,37 @@ export interface Setting {
   subgroup?: string;
   description?: string;
   placeholder?: string;
-  type?: 'string' | 'password' | 'number' | 'boolean' | 'device' | 'integer' | 'button' | 'clippath' | 'interface' | 'html' | 'textarea' | 'date' | 'time' | 'datetime' | 'day' | 'script';
+  type?:
+  'string' |
+  'password' |
+  'number' |
+  'boolean' |
+  'device' |
+  'integer' |
+  'button' |
+  'clippath' |
+  'interface' |
+  'html' |
+  'textarea' |
+  'date' |
+  'time' |
+  'datetime' |
+  'day' |
+  'timerange' |
+  'daterange' |
+  'datetimerange' |
+  'radiobutton' |
+  'radiopanel' |
+  'script';
   /**
-   * The range of allowed numbers, if any, when the type is 'number'.
+   * The range of allowed numbers or dates/times, if any, when the type is number, timerange, or daterange, or datetimerange.
    */
   range?: [number, number];
   readonly?: boolean;
   choices?: string[];
+  icon?: string;
+  icons?: string[];
+  radioGroups?: string[];
   combobox?: boolean;
   deviceFilter?: string;
   multiple?: boolean;
@@ -2542,6 +2586,18 @@ export interface RTCAVSignalingSetup {
     dict?: RTCDataChannelInit;
   };
   type: 'offer' | 'answer';
+}
+
+export interface KvmKeyEvent {
+  event: 'keydown' | 'keyup' | 'keypress';
+  key: string;
+  code: string;
+}
+export interface KvmMouseEvent {
+  event: 'mousedown' | 'mouseup' | 'mousemove';
+  x: number;
+  y: number;
+  button?: number;
 }
 
 export enum ScryptedMimeTypes {
