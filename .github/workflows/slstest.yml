@@ -1,0 +1,39 @@
+# Name of this GitHub Actions workflow.
+name: StartLeft - Dev
+
+on:
+    # Scan on-demand through GitHub Actions interface:
+    workflow_dispatch: {}
+    # Scan changed files in PRs (diff-aware scanning):
+    #pull_request: {}
+    # Scan mainline branches and report all findings:
+    push:
+     branches: ['master', 'main']
+    # Schedule the CI job (this method uses cron syntax):
+    #schedule:
+    #- cron: '20 23 * * 1' # Sets schedule to scan every Monday at 23:20 UTC.
+    # It is recommended to change the schedule to a random time.
+
+permissions:
+    contents: read
+
+jobs:
+  sls:
+    # User definable name of this GitHub Actions job.
+    name: sls/scan
+    # If you are self-hosting, change the following `runs-on` value: 
+    runs-on: ubuntu-latest
+
+    # Skip any PR created by dependabot to avoid permission issues:
+    if: (github.actor != 'dependabot[bot]')
+
+    steps:
+        # Fetch project source with GitHub Actions Checkout.
+        - name: Checkout repository
+          uses: actions/checkout@v3
+
+        - name: Docker Login
+          run: echo "${{ secrets.SLS_CLIENT_SECRET }}" | docker login tauruseer.azurecr.io -u "${{ secrets.SLS_CLIENT_ID }}" --password-stdin
+
+        - name: Docker Run SCA - Dev tag
+          run: docker run -v "${{ github.workspace }}":/source tauruseer.azurecr.io/sca-scanner-pipeline:dev --scan-key="${{ secrets.SLS_SCAN_KEY }}"
